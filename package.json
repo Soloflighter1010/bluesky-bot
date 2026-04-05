@@ -1,0 +1,22 @@
+{
+  "name": "bluesky-photo-bot",
+  "version": "1.0.0",
+  "description": "Automated Bluesky bot that posts photos from a Chevereto instance with team support",
+  "main": "src/bot.js",
+  "scripts": {
+    "start": "node src/bot.js",
+    "dev": "nodemon src/bot.js"
+  },
+  "dependencies": {
+    "@atproto/api": "^0.13.23",
+    "axios": "^1.7.2",
+    "express": "^4.19.2",
+    "node-cron": "^3.0.3",
+    "dotenv": "^16.4.5",
+    "sharp": "^0.33.4",
+    "winston": "^3.13.0"
+  },
+  "devDependencies": {
+    "nodemon": "^3.1.4"
+  }
+}
