@@ -65,7 +65,7 @@ async function postPhotosWithText(entries, text) {
   await rt.detectFacets(agent);
 
   const embedImages = entries.slice(0, 4).map(({ image, blob }) => ({
-    image,
+    image: blob,
     alt: (image.title || 'Untitled').slice(0, 300),
   }));
 
