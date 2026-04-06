@@ -179,6 +179,7 @@ function parsePage(html, pageUrl) {
 
 async function fetchRecentImages(maxPages = 5) {
   const all = [];
+  const seenIds = new Set();
 
   for (let page = 1; page <= maxPages; page++) {
     const url = page === 1
@@ -190,11 +191,24 @@ async function fetchRecentImages(maxPages = 5) {
       const html = await fetchHTML(url);
       const imgs = parsePage(html, url);
 
-      // Log the IDs so we can verify they're unique
-      logger.info(`Page ${page} IDs: ${imgs.map(i => i.id).join(', ')}`);
+      // Filter to only images we haven't seen across any previous page
+      const newImgs = imgs.filter(img => {
+        const id = img.id_encoded ?? img.id;
+        if (seenIds.has(id)) return false;
+        seenIds.add(id);
+        return true;
+      });
 
-      all.push(...imgs);
-      if (imgs.length === 0) break;
+      logger.info(`Page ${page}: ${imgs.length} cards, ${newImgs.length} new unique images`);
+      all.push(...newImgs);
+
+      // Stop if this page added nothing new — Chevereto's infinite scroll
+      // includes all previous items on every subsequent page, so zero new
+      // images means we've reached the true end of the feed.
+      if (newImgs.length === 0) {
+        logger.info(`Page ${page} had no new images — stopping pagination`);
+        break;
+      }
 
     } catch (err) {
       logger.warn(`fetchRecentImages page ${page} failed: ${err.message}`);
@@ -202,7 +216,7 @@ async function fetchRecentImages(maxPages = 5) {
     }
   }
 
-  logger.info(`fetchRecentImages total: ${all.length} images across ${maxPages} pages`);
+  logger.info(`fetchRecentImages total: ${all.length} unique images`);
   return all;
 }
 
