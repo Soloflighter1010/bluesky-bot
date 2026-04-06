@@ -1,7 +1,8 @@
 # 📸 PhotoBot — Bluesky × Chevereto
 
 An automated Bluesky bot that posts photos from your team's Chevereto instance,
-with recency-weighted randomisation, a web dashboard, and DM-based commands.
+with recency-weighted selection, VRChat/VRCX metadata support, a web dashboard,
+and DM-based commands.
 
 > **No Node.js or npm knowledge needed** — Docker handles everything.
 
@@ -9,14 +10,17 @@ with recency-weighted randomisation, a web dashboard, and DM-based commands.
 
 ## Features
 
-- **Hourly posting** — posts 4 photos per hour (configurable), staggered 5 min apart
+- **4 photos per post** — each cycle posts one Bluesky image gallery with up to 4 photos
 - **Recency bias** — newer uploads are statistically much more likely to be picked
-- **Team-aware** — fetches from all photographers on your shared Chevereto instance
-- **Album highlights** — announce new albums with their cover photo
-- **Member spotlights** — showcase a photographer with an intro + 3 recent shots
-- **DM commands** — control the bot from Bluesky direct messages
-- **Web dashboard** — browser-based control panel at `localhost:3000`
-- **Persistent state** — survives restarts (saved to `./data/` on your machine)
+- **Team-aware** — scrapes `/explore/recent` so all photographers' uploads are included automatically
+- **VRChat / VRCX metadata** — detects VRChat screenshots and replies with the world name and a direct VRChat link
+- **Album highlights** — announce a new album with its cover photo
+- **Member spotlights** — showcase a photographer with an intro post and up to 3 of their recent shots
+- **Message templates** — customise exactly what each post type says, with `{variable}` placeholders
+- **Creator feature history** — tracks who's been spotlighted and when
+- **DM commands** — control the bot by messaging it on Bluesky
+- **Web dashboard** — browser-based control panel with live stats, queue viewer, and template editor
+- **Persistent state** — history and queue survive container restarts (saved to `./data/` on your machine)
 
 ---
 
@@ -42,19 +46,21 @@ Open `.env` in any text editor and fill in your values:
 | Variable | Description |
 |---|---|
 | `BLUESKY_HANDLE` | Your bot's Bluesky handle, e.g. `photobot.bsky.social` |
-| `BLUESKY_APP_PASSWORD` | Generate one at bsky.social → Settings → App Passwords |
+| `BLUESKY_APP_PASSWORD` | Generate one at bsky.social → Settings → App Passwords — do not use your real password |
 | `CHEVERETO_BASE_URL` | Your Chevereto site URL, e.g. `https://photos.yourteam.com` |
-| `CHEVERETO_API_KEY` | Found in Chevereto admin → Dashboard → API |
 | `ADMIN_HANDLES` | Comma-separated Bluesky handles that can send DM commands |
-| `DASHBOARD_SECRET` | A random string to protect the web dashboard — make it long |
+| `DASHBOARD_SECRET` | A long random string to protect the web dashboard |
 
 **Optional:**
 
 | Variable | Default | Description |
 |---|---|---|
-| `POSTS_PER_HOUR` | `4` | Photos posted per hour |
-| `RECENCY_BIAS` | `3.0` | Higher = newer photos favoured more (1 = uniform random) |
-| `DASHBOARD_PORT` | `3000` | Port the dashboard is available on |
+| `POSTS_PER_HOUR` | `4` | Number of photos included in each hourly gallery post |
+| `RECENCY_BIAS` | `3.0` | Higher = newer photos favoured more strongly (1 = uniform random) |
+| `DASHBOARD_PORT` | `3000` | Port the dashboard is served on |
+
+> **Tip:** Avoid `#` characters in your `DASHBOARD_SECRET` — the `#` starts a comment in `.env` files
+> and will silently truncate the value. Use only letters, numbers, and hyphens.
 
 ### 2. Start the bot
 
@@ -62,14 +68,8 @@ Open `.env` in any text editor and fill in your values:
 docker compose up -d
 ```
 
-Docker will build the image and start the bot in the background. That's it.
-
-The bot will:
-1. Log into Bluesky
-2. Run an initial post cycle immediately on startup
-3. Post every hour at :00
-4. Poll DMs every 60 seconds for commands
-5. Serve the dashboard at `http://localhost:3000`
+Docker builds the image and starts the bot in the background. On first start it runs
+an immediate post cycle so you don't have to wait for the top of the hour.
 
 ---
 
@@ -78,7 +78,7 @@ The bot will:
 ```bash
 docker compose up -d        # start the bot
 docker compose down         # stop the bot
-docker compose restart      # restart (required after editing .env)
+docker compose restart      # restart after editing .env
 docker compose logs -f      # watch live logs
 ```
 
@@ -86,34 +86,74 @@ docker compose logs -f      # watch live logs
 
 ## Persistent Data
 
-Bot state (posted image history, queue, stats) and logs are written to a `./data/`
-folder in the project directory — not inside the container. This means:
+Everything important is written to a `./data/` folder on your machine, not inside the container:
 
-- Restarting or rebuilding the container **never loses your history**
-- You can inspect or back up `./data/bot-state.json` at any time
-- Logs are at `./data/bot.log`
+- `./data/bot-state.json` — posted image history, highlight queue, spotlight history, templates
+- `./data/bot.log` — rolling log file (3 × 5 MB)
+
+Rebuilding or updating the container never loses this data.
 
 ---
 
 ## Web Dashboard
 
-Open `http://localhost:3000` in your browser (or replace `localhost` with your
-server's IP/hostname if running remotely).
+Open `http://localhost:3000` in your browser (replace `localhost` with your server's IP if running remotely).
 
-Enter your `DASHBOARD_SECRET` to unlock controls:
+Enter your `DASHBOARD_SECRET` to unlock the full controls:
 
-- **Start / Pause** the bot
-- **Post Now** — trigger an immediate batch
-- **Queue an Album** — enter a Chevereto album ID or hash
-- **Queue a Spotlight** — enter a Chevereto username
-- Live stats: total posted, last post time, queue depth, uptime
+| Section | What it does |
+|---|---|
+| **Bot Controls** | Start, pause, trigger an immediate post, or clear the queue |
+| **Album Highlight** | Queue an album by its Chevereto hash — posts an intro + cover photo |
+| **Member Spotlight** | Queue a photographer by username — posts an intro + up to 3 recent shots |
+| **Post Queue** | Live view of everything waiting to be posted |
+| **Creator Feature History** | Log of every member spotlight with the date last featured |
+| **Message Templates** | Edit what each post type says — changes take effect immediately |
+| **Activity Log** | In-browser record of dashboard actions |
+
+---
+
+## Message Templates
+
+Templates use `{variable}` placeholders. Edit them in the dashboard or directly in
+`./data/bot-state.json`.
+
+| Template | Variables | Used for |
+|---|---|---|
+| `regularPost` | `{username}` `{title}` `{tags}` `{url}` | Every scheduled gallery post |
+| `albumHighlight` | `{title}` | Album announcement post |
+| `memberSpotlight` | `{name}` `{username}` | Photographer spotlight intro |
+| `vrcxReply` | `{worldName}` `{worldId}` `{worldUrl}` `{players}` `{photographers}` | VRChat metadata reply thread |
+
+`{photographers}` in the VRCX reply is only populated when the batch contains photos
+from more than one uploader — if the whole post is from one person it stays blank
+since they're already credited in the main post.
+
+---
+
+## VRChat / VRCX Metadata
+
+When the bot posts a VRChat screenshot it checks the image file for VRCX metadata
+(stored in PNG `tEXt` chunks). If found, it posts a reply to the photo with the
+world name and a direct link:
+
+```
+🌍 World: 1's Optimized Box
+🔗 https://vrchat.com/home/world/wrld_1a8b8684-3b19-4770-a4a7-288762f57b29
+```
+
+**Requirements for this to work:**
+
+- The image must be a VRChat screenshot taken with VRCX installed
+- Chevereto must be serving the **original file** — if your instance re-encodes
+  uploaded images to JPEG the PNG metadata will be stripped and detection won't fire
 
 ---
 
 ## DM Commands
 
-Send direct messages on Bluesky to your bot account from any handle listed in
-`ADMIN_HANDLES`. The bot checks for new messages every 60 seconds.
+Send direct messages on Bluesky to your bot account from any handle in `ADMIN_HANDLES`.
+The bot checks for new messages every 60 seconds.
 
 | Command | Effect |
 |---|---|
@@ -121,13 +161,12 @@ Send direct messages on Bluesky to your bot account from any handle listed in
 | `!stop` | Pause auto-posting |
 | `!status` | Show running state and stats |
 | `!stats` | Posting statistics |
-| `!post now` | Trigger an immediate batch post |
+| `!post now` | Trigger an immediate post cycle |
 | `!highlight <albumId>` | Queue an album highlight |
 | `!spotlight <username>` | Queue a member spotlight |
 | `!help` | List all commands |
 
-### Examples
-
+**Examples:**
 ```
 !highlight abc123def456
 !spotlight jane_doe
@@ -135,34 +174,43 @@ Send direct messages on Bluesky to your bot account from any handle listed in
 !stop
 ```
 
-> **Note:** Each admin handle needs to send the bot at least one DM first to open
-> a conversation thread before commands will work. Just send a `!help` to get started.
+> **First-time setup:** Each admin handle needs to send the bot at least one DM first to
+> open a conversation thread. Just send `!help` to get started.
 
 ---
 
 ## How Recency Weighting Works
 
-Images are fetched newest-first from Chevereto. Each image is assigned a weight:
+Images are scraped from `/explore/recent` (newest first) and each is assigned a weight:
 
 ```
 weight[i] = (N - i) ^ BIAS
 ```
 
-Where `N` is the pool size, `i` is the index (0 = newest), and `BIAS` is `RECENCY_BIAS`.
+Where `N` is the pool size and `i` is position (0 = newest). With the default `BIAS=3.0`,
+the newest image is roughly 1000× more likely to be picked than the oldest in a pool of
+500. Fresh uploads surface quickly while older shots still occasionally appear. The bot
+tracks the last 500 posted IDs to avoid re-posting the same image.
 
-With the default `BIAS=3.0`, the newest image is roughly 1000× more likely to be
-picked than the oldest in a pool of 500. Fresh uploads get shared quickly while
-older gems still occasionally surface.
+---
+
+## Chevereto Compatibility
+
+The bot scrapes your Chevereto site's public `/explore/recent` page — no API key is
+needed. This works with any publicly accessible Chevereto v3 or v4 instance regardless
+of API settings.
+
+Pagination is supported (`/explore/recent?page=2`, etc.) and the bot fetches up to
+5 pages per cycle. For user spotlights, it first filters `/explore/recent` by username
+before falling back to scraping the user's profile page directly.
 
 ---
 
 ## Exposing the Dashboard Publicly
 
-If you're running on a server and want the dashboard accessible over the internet,
-**do not expose port 3000 directly**. Put it behind a reverse proxy with HTTPS.
+Never expose port 3000 directly. Use a reverse proxy with HTTPS.
 
-**Caddy** (simplest option — handles HTTPS automatically):
-
+**Caddy** (handles HTTPS automatically):
 ```
 photobot.yourdomain.com {
     reverse_proxy localhost:3000
@@ -170,26 +218,13 @@ photobot.yourdomain.com {
 ```
 
 **nginx:**
-
 ```nginx
 server {
     listen 443 ssl;
     server_name photobot.yourdomain.com;
-
-    location / {
-        proxy_pass http://localhost:3000;
-    }
+    location / { proxy_pass http://localhost:3000; }
 }
 ```
-
----
-
-## Chevereto API Notes
-
-- The bot uses the **Chevereto v3/v4 JSON API** (`/api/1/...`)
-- Your API key must have **read** access to images, albums, and users
-- Images are fetched up to 5 pages × 100 per page = 500 most recent uploads
-- The bot tracks the last 500 posted image IDs to avoid repeats
 
 ---
 
@@ -200,15 +235,15 @@ bluesky-photo-bot/
 ├── src/
 │   ├── bot.js           Main entry point
 │   ├── bluesky.js       AT Protocol / Bluesky API wrapper
-│   ├── chevereto.js     Chevereto API + recency weighting
-│   ├── scheduler.js     Hourly posting loop
+│   ├── chevereto.js     Chevereto scraper + VRCX metadata extraction
+│   ├── scheduler.js     Hourly posting loop + template rendering
 │   ├── commands.js      DM command parser
 │   ├── dashboard.js     Express REST API
-│   ├── state.js         JSON-backed state persistence
+│   ├── state.js         JSON-backed state + template defaults
 │   └── logger.js        Winston logger
 ├── dashboard/
 │   └── index.html       Web dashboard UI
-├── data/                Created automatically — holds state & logs
+├── data/                Created automatically — state, logs
 ├── Dockerfile
 ├── docker-compose.yml
 ├── .env.example
