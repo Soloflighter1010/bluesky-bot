@@ -1,38 +1,48 @@
 /**
  * state.js – lightweight JSON-backed state store
- * Keeps bot config persistent across restarts without needing a database.
  */
 
 const fs   = require('fs');
 const path = require('path');
 
-const STATE_FILE = path.join(__dirname, '..', 'bot-state.json');
+const STATE_FILE = process.env.STATE_FILE || path.join(__dirname, '..', 'bot-state.json');
 
 const DEFAULT_STATE = {
   running: true,
-  postedIds: [],          // track recently posted image IDs to avoid repeats
-  highlights: [],         // queued album/member highlight posts
+  postedIds: [],
+  highlights: [],
+  spotlightHistory: [],   // [{ username, name, featuredAt }]
   stats: {
     totalPosted: 0,
     lastPostedAt: null,
     lastCheckAt: null,
   },
-  memberSpotlight: null,  // { userId, postedAt }
-  pinnedAlbum: null,      // { albumId, title, postedAt }
+  templates: {
+    regularPost:     '📸 {username}\n{title}\n{tags}',
+    albumHighlight:  '📂 New Album: {title}\nFresh collection from our team!\n#photography #photooftheday',
+    memberSpotlight: '🌟 Photographer Spotlight: {name}\nCheck out their recent work below!\n#photography #teamspotlight',
+    vrcxReply:       '🌍 World: {worldName}\n✍️ Author: {worldAuthor}\n📍 {instanceId}',
+  },
 };
 
 function load() {
   try {
     if (fs.existsSync(STATE_FILE)) {
       const raw = fs.readFileSync(STATE_FILE, 'utf8');
-      return { ...DEFAULT_STATE, ...JSON.parse(raw) };
+      const saved = JSON.parse(raw);
+      // Deep-merge templates so new defaults appear if state predates them
+      return {
+        ...DEFAULT_STATE,
+        ...saved,
+        templates: { ...DEFAULT_STATE.templates, ...(saved.templates || {}) },
+        stats:     { ...DEFAULT_STATE.stats,     ...(saved.stats     || {}) },
+      };
     }
-  } catch (e) { /* ignore parse errors, start fresh */ }
-  return { ...DEFAULT_STATE };
+  } catch (e) { /* ignore, start fresh */ }
+  return JSON.parse(JSON.stringify(DEFAULT_STATE));
 }
 
 function save(state) {
-  // Trim postedIds to last 500 so the file doesn't grow indefinitely
   if (state.postedIds.length > 500) {
     state.postedIds = state.postedIds.slice(-500);
   }
