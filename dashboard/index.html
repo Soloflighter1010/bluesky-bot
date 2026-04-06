@@ -5,419 +5,132 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 <title>PhotoBot Dashboard</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
-<link href="https://fonts.googleapis.com/css2?family=DM+Mono:ital,wght@0,300;0,400;0,500;1,300&family=Playfair+Display:wght@400;700;900&family=DM+Sans:wght@300;400;500&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@300;400;500&family=Playfair+Display:wght@700&family=DM+Sans:wght@300;400;500&display=swap" rel="stylesheet">
 <style>
   :root {
-    --bg:       #0a0a0a;
-    --surface:  #111111;
-    --raised:   #181818;
-    --border:   #242424;
-    --accent:   #e8d5b7;       /* warm parchment gold */
-    --accent2:  #7eb8d4;       /* sky blue */
-    --danger:   #c0392b;
-    --success:  #27ae60;
-    --text:     #e0ddd8;
-    --muted:    #6b6660;
-    --mono:     'DM Mono', monospace;
-    --serif:    'Playfair Display', serif;
-    --sans:     'DM Sans', sans-serif;
+    --bg:      #0a0a0a;
+    --surface: #111111;
+    --raised:  #181818;
+    --border:  #242424;
+    --accent:  #e8d5b7;
+    --accent2: #7eb8d4;
+    --danger:  #c0392b;
+    --success: #27ae60;
+    --warn:    #f39c12;
+    --text:    #e0ddd8;
+    --muted:   #6b6660;
+    --mono:    'DM Mono', monospace;
+    --serif:   'Playfair Display', serif;
+    --sans:    'DM Sans', sans-serif;
   }
-
   *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { background: var(--bg); color: var(--text); font-family: var(--sans); font-size: 14px; min-height: 100vh; line-height: 1.6; }
 
-  html, body {
-    background: var(--bg);
-    color: var(--text);
-    font-family: var(--sans);
-    font-size: 14px;
-    min-height: 100vh;
-    line-height: 1.6;
-  }
-
-  /* ── HEADER ── */
   header {
     border-bottom: 1px solid var(--border);
     padding: 18px 32px;
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    position: sticky;
-    top: 0;
+    display: flex; align-items: center; justify-content: space-between;
+    position: sticky; top: 0;
     background: rgba(10,10,10,0.92);
     backdrop-filter: blur(12px);
     z-index: 100;
   }
+  .logo { display: flex; align-items: baseline; gap: 10px; }
+  .logo h1 { font-family: var(--serif); font-size: 22px; color: var(--accent); }
+  .logo span { font-family: var(--mono); font-size: 10px; color: var(--muted); letter-spacing: .15em; text-transform: uppercase; }
+  .status-pill { display: flex; align-items: center; gap: 8px; font-family: var(--mono); font-size: 11px; letter-spacing: .1em; text-transform: uppercase; color: var(--muted); }
+  .status-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); transition: all .3s; }
+  .status-dot.running { background: var(--success); box-shadow: 0 0 8px var(--success); animation: pulse 2s infinite; }
+  .status-dot.paused  { background: var(--warn); }
+  @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.4} }
 
-  .logo {
-    display: flex;
-    align-items: baseline;
-    gap: 10px;
-  }
+  main { max-width: 1100px; margin: 0 auto; padding: 40px 32px; display: grid; gap: 24px; }
 
-  .logo h1 {
-    font-family: var(--serif);
-    font-size: 22px;
-    font-weight: 700;
-    letter-spacing: -0.02em;
-    color: var(--accent);
-  }
-
-  .logo span {
-    font-family: var(--mono);
-    font-size: 10px;
-    color: var(--muted);
-    letter-spacing: 0.15em;
-    text-transform: uppercase;
-  }
-
-  .status-pill {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    font-family: var(--mono);
-    font-size: 11px;
-    letter-spacing: 0.1em;
-    text-transform: uppercase;
-    color: var(--muted);
-  }
-
-  .status-dot {
-    width: 8px; height: 8px;
-    border-radius: 50%;
-    background: var(--muted);
-    transition: background 0.3s, box-shadow 0.3s;
-  }
-
-  .status-dot.running {
-    background: var(--success);
-    box-shadow: 0 0 8px var(--success);
-    animation: pulse 2s infinite;
-  }
-
-  .status-dot.paused {
-    background: #f39c12;
-  }
-
-  @keyframes pulse {
-    0%, 100% { opacity: 1; }
-    50%       { opacity: 0.5; }
-  }
-
-  /* ── LAYOUT ── */
-  main {
-    max-width: 1100px;
-    margin: 0 auto;
-    padding: 40px 32px;
-    display: grid;
-    gap: 24px;
-  }
-
-  /* ── AUTH BANNER ── */
-  #auth-banner {
-    background: var(--surface);
-    border: 1px solid var(--border);
-    border-radius: 8px;
-    padding: 20px 24px;
-    display: flex;
-    align-items: center;
-    gap: 16px;
-  }
-
-  #auth-banner label {
-    font-family: var(--mono);
-    font-size: 11px;
-    letter-spacing: 0.1em;
-    color: var(--muted);
-    text-transform: uppercase;
-    white-space: nowrap;
-  }
-
-  #secret-input {
-    flex: 1;
-    background: var(--raised);
-    border: 1px solid var(--border);
-    color: var(--text);
-    font-family: var(--mono);
-    font-size: 13px;
-    padding: 8px 12px;
-    border-radius: 4px;
-    outline: none;
-    transition: border-color 0.2s;
-  }
-
+  /* Auth */
+  #auth-banner { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 20px 24px; display: flex; align-items: center; gap: 16px; }
+  #auth-banner label { font-family: var(--mono); font-size: 11px; letter-spacing: .1em; color: var(--muted); text-transform: uppercase; white-space: nowrap; }
+  #secret-input { flex:1; background: var(--raised); border: 1px solid var(--border); color: var(--text); font-family: var(--mono); font-size: 13px; padding: 8px 12px; border-radius: 4px; outline: none; transition: border-color .2s; }
   #secret-input:focus { border-color: var(--accent); }
 
-  /* ── STAT CARDS ── */
-  .stats-grid {
-    display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
-    gap: 16px;
-  }
+  /* Stat cards */
+  .stats-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 16px; }
+  .stat-card { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 20px 22px; position: relative; overflow: hidden; }
+  .stat-card::before { content:''; position: absolute; inset: 0 0 auto 0; height: 2px; background: linear-gradient(90deg, var(--accent) 0%, transparent 100%); opacity: .5; }
+  .stat-label { font-family: var(--mono); font-size: 10px; letter-spacing: .15em; text-transform: uppercase; color: var(--muted); margin-bottom: 8px; }
+  .stat-value { font-family: var(--serif); font-size: 32px; color: var(--accent); line-height: 1; }
+  .stat-sub   { font-size: 11px; color: var(--muted); margin-top: 4px; font-family: var(--mono); }
 
-  .stat-card {
-    background: var(--surface);
-    border: 1px solid var(--border);
-    border-radius: 8px;
-    padding: 20px 22px;
-    position: relative;
-    overflow: hidden;
-  }
+  /* Sections */
+  .section { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
+  .section-header { padding: 16px 22px; border-bottom: 1px solid var(--border); display: flex; align-items: center; justify-content: space-between; }
+  .section-title  { font-family: var(--mono); font-size: 11px; letter-spacing: .15em; text-transform: uppercase; color: var(--muted); }
+  .section-body   { padding: 22px; }
 
-  .stat-card::before {
-    content: '';
-    position: absolute;
-    inset: 0 0 auto 0;
-    height: 2px;
-    background: linear-gradient(90deg, var(--accent) 0%, transparent 100%);
-    opacity: 0.5;
-  }
-
-  .stat-label {
-    font-family: var(--mono);
-    font-size: 10px;
-    letter-spacing: 0.15em;
-    text-transform: uppercase;
-    color: var(--muted);
-    margin-bottom: 8px;
-  }
-
-  .stat-value {
-    font-family: var(--serif);
-    font-size: 32px;
-    font-weight: 700;
-    color: var(--accent);
-    line-height: 1;
-  }
-
-  .stat-sub {
-    font-size: 11px;
-    color: var(--muted);
-    margin-top: 4px;
-    font-family: var(--mono);
-  }
-
-  /* ── SECTIONS ── */
-  .section {
-    background: var(--surface);
-    border: 1px solid var(--border);
-    border-radius: 8px;
-    overflow: hidden;
-  }
-
-  .section-header {
-    padding: 16px 22px;
-    border-bottom: 1px solid var(--border);
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-  }
-
-  .section-title {
-    font-family: var(--mono);
-    font-size: 11px;
-    letter-spacing: 0.15em;
-    text-transform: uppercase;
-    color: var(--muted);
-  }
-
-  .section-body {
-    padding: 22px;
-  }
-
-  /* ── BUTTONS ── */
-  .btn-row {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 10px;
-  }
-
-  button {
-    font-family: var(--mono);
-    font-size: 11px;
-    letter-spacing: 0.1em;
-    text-transform: uppercase;
-    padding: 9px 18px;
-    border-radius: 4px;
-    border: 1px solid var(--border);
-    cursor: pointer;
-    transition: all 0.15s;
-    background: var(--raised);
-    color: var(--text);
-  }
-
-  button:hover { border-color: var(--accent); color: var(--accent); }
-  button:active { transform: scale(0.97); }
-
-  button.primary {
-    background: var(--accent);
-    color: #0a0a0a;
-    border-color: var(--accent);
-    font-weight: 500;
-  }
-
-  button.primary:hover { background: #f5e8cc; border-color: #f5e8cc; color: #0a0a0a; }
-
-  button.danger {
-    border-color: var(--danger);
-    color: var(--danger);
-  }
-
-  button.danger:hover { background: var(--danger); color: #fff; }
-
-  button.success {
-    border-color: var(--success);
-    color: var(--success);
-  }
-
+  /* Buttons */
+  .btn-row { display: flex; flex-wrap: wrap; gap: 10px; }
+  button { font-family: var(--mono); font-size: 11px; letter-spacing: .1em; text-transform: uppercase; padding: 9px 18px; border-radius: 4px; border: 1px solid var(--border); cursor: pointer; transition: all .15s; background: var(--raised); color: var(--text); }
+  button:hover  { border-color: var(--accent); color: var(--accent); }
+  button:active { transform: scale(.97); }
+  button.primary { background: var(--accent); color: #0a0a0a; border-color: var(--accent); font-weight: 500; }
+  button.primary:hover { background: #f5e8cc; }
+  button.danger  { border-color: var(--danger); color: var(--danger); }
+  button.danger:hover  { background: var(--danger); color: #fff; }
+  button.success { border-color: var(--success); color: var(--success); }
   button.success:hover { background: var(--success); color: #fff; }
+  button:disabled { opacity: .4; cursor: not-allowed; transform: none; }
 
-  button:disabled {
-    opacity: 0.4;
-    cursor: not-allowed;
-    transform: none;
-  }
+  /* Forms */
+  .form-row { display: flex; gap: 10px; flex-wrap: wrap; }
+  input[type="text"], input[type="password"] { flex:1; min-width: 200px; background: var(--raised); border: 1px solid var(--border); color: var(--text); font-family: var(--mono); font-size: 13px; padding: 8px 12px; border-radius: 4px; outline: none; transition: border-color .2s; }
+  input:focus { border-color: var(--accent); }
+  input::placeholder { color: var(--muted); }
+  textarea { width: 100%; background: var(--raised); border: 1px solid var(--border); color: var(--text); font-family: var(--mono); font-size: 12px; padding: 10px 12px; border-radius: 4px; outline: none; transition: border-color .2s; resize: vertical; line-height: 1.6; }
+  textarea:focus { border-color: var(--accent); }
+  label.field-label { font-family: var(--mono); font-size: 10px; letter-spacing: .12em; text-transform: uppercase; color: var(--muted); display: block; margin-bottom: 6px; }
 
-  /* ── FORMS ── */
-  .form-row {
-    display: flex;
-    gap: 10px;
-    flex-wrap: wrap;
-  }
+  /* Queue list */
+  .queue-list { display: flex; flex-direction: column; gap: 10px; min-height: 60px; }
+  .queue-item { background: var(--raised); border: 1px solid var(--border); border-radius: 6px; padding: 12px 16px; display: flex; align-items: center; gap: 12px; font-size: 13px; animation: slideIn .2s ease; }
+  @keyframes slideIn { from{opacity:0;transform:translateY(-8px)} to{opacity:1;transform:translateY(0)} }
+  .queue-badge { font-family: var(--mono); font-size: 9px; letter-spacing: .1em; text-transform: uppercase; padding: 2px 7px; border-radius: 3px; white-space: nowrap; }
+  .badge-album     { background: rgba(126,184,212,.15); color: var(--accent2); border: 1px solid rgba(126,184,212,.3); }
+  .badge-spotlight { background: rgba(232,213,183,.15); color: var(--accent);  border: 1px solid rgba(232,213,183,.3); }
+  .queue-empty     { font-family: var(--mono); font-size: 11px; color: var(--muted); text-align: center; padding: 20px; }
+  .queue-time      { font-family: var(--mono); font-size: 10px; color: var(--muted); margin-left: auto; }
 
-  input[type="text"] {
-    flex: 1;
-    min-width: 200px;
-    background: var(--raised);
-    border: 1px solid var(--border);
-    color: var(--text);
-    font-family: var(--mono);
-    font-size: 13px;
-    padding: 8px 12px;
-    border-radius: 4px;
-    outline: none;
-    transition: border-color 0.2s;
-  }
+  /* History table */
+  .history-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  .history-table th { font-family: var(--mono); font-size: 10px; letter-spacing: .1em; text-transform: uppercase; color: var(--muted); text-align: left; padding: 8px 12px; border-bottom: 1px solid var(--border); }
+  .history-table td { padding: 10px 12px; border-bottom: 1px solid rgba(255,255,255,.04); }
+  .history-table tr:last-child td { border-bottom: none; }
+  .history-table .hl-time { font-family: var(--mono); font-size: 11px; color: var(--muted); }
 
-  input[type="text"]:focus { border-color: var(--accent); }
-  input[type="text"]::placeholder { color: var(--muted); }
+  /* Template vars hint */
+  .tpl-vars { font-family: var(--mono); font-size: 11px; color: var(--muted); margin-top: 6px; }
+  .tpl-vars code { color: var(--accent2); }
 
-  /* ── QUEUE ── */
-  .queue-list {
-    display: flex;
-    flex-direction: column;
-    gap: 10px;
-    min-height: 60px;
-  }
+  /* Command grid */
+  .cmd-grid { display: grid; grid-template-columns: auto 1fr; gap: 4px 20px; align-items: baseline; }
+  .cmd      { font-family: var(--mono); font-size: 12px; color: var(--accent2); white-space: nowrap; }
+  .cmd-desc { font-size: 12px; color: var(--muted); }
 
-  .queue-item {
-    background: var(--raised);
-    border: 1px solid var(--border);
-    border-radius: 6px;
-    padding: 12px 16px;
-    display: flex;
-    align-items: center;
-    gap: 12px;
-    font-size: 13px;
-    animation: slideIn 0.2s ease;
-  }
+  /* Log */
+  #log-output { font-family: var(--mono); font-size: 12px; line-height: 1.8; color: var(--muted); max-height: 240px; overflow-y: auto; }
+  .log-line  { display: flex; gap: 10px; }
+  .log-time  { color: var(--border); flex-shrink: 0; }
+  .log-ok    { color: var(--success); }
+  .log-err   { color: var(--danger); }
+  .log-info  { color: var(--accent); }
+  .log-warn  { color: var(--warn); }
 
-  @keyframes slideIn {
-    from { opacity: 0; transform: translateY(-8px); }
-    to   { opacity: 1; transform: translateY(0); }
-  }
-
-  .queue-badge {
-    font-family: var(--mono);
-    font-size: 9px;
-    letter-spacing: 0.1em;
-    text-transform: uppercase;
-    padding: 2px 7px;
-    border-radius: 3px;
-    white-space: nowrap;
-  }
-
-  .badge-album   { background: rgba(126,184,212,0.15); color: var(--accent2); border: 1px solid rgba(126,184,212,0.3); }
-  .badge-spotlight { background: rgba(232,213,183,0.15); color: var(--accent); border: 1px solid rgba(232,213,183,0.3); }
-
-  .queue-empty {
-    font-family: var(--mono);
-    font-size: 11px;
-    color: var(--muted);
-    text-align: center;
-    padding: 20px;
-    letter-spacing: 0.05em;
-  }
-
-  /* ── COMMAND REFERENCE ── */
-  .cmd-grid {
-    display: grid;
-    grid-template-columns: auto 1fr;
-    gap: 4px 20px;
-    align-items: baseline;
-  }
-
-  .cmd {
-    font-family: var(--mono);
-    font-size: 12px;
-    color: var(--accent2);
-    white-space: nowrap;
-  }
-
-  .cmd-desc {
-    font-size: 12px;
-    color: var(--muted);
-  }
-
-  /* ── LOG ── */
-  #log-output {
-    font-family: var(--mono);
-    font-size: 12px;
-    line-height: 1.8;
-    color: var(--muted);
-    max-height: 240px;
-    overflow-y: auto;
-  }
-
-  .log-line { display: flex; gap: 10px; }
-  .log-time { color: var(--border); flex-shrink: 0; }
-  .log-ok   { color: var(--success); }
-  .log-err  { color: var(--danger); }
-  .log-info { color: var(--accent); }
-
-  /* ── TOAST ── */
-  #toast {
-    position: fixed;
-    bottom: 32px;
-    right: 32px;
-    background: var(--raised);
-    border: 1px solid var(--border);
-    border-radius: 6px;
-    padding: 12px 20px;
-    font-family: var(--mono);
-    font-size: 12px;
-    letter-spacing: 0.05em;
-    opacity: 0;
-    transform: translateY(10px);
-    transition: all 0.25s;
-    pointer-events: none;
-    max-width: 320px;
-  }
-
-  #toast.show {
-    opacity: 1;
-    transform: translateY(0);
-  }
-
+  /* Toast */
+  #toast { position: fixed; bottom: 32px; right: 32px; background: var(--raised); border: 1px solid var(--border); border-radius: 6px; padding: 12px 20px; font-family: var(--mono); font-size: 12px; opacity: 0; transform: translateY(10px); transition: all .25s; pointer-events: none; max-width: 320px; }
+  #toast.show { opacity:1; transform: translateY(0); }
   #toast.ok  { border-left: 3px solid var(--success); }
   #toast.err { border-left: 3px solid var(--danger); }
 
-  /* ── UPTIME DISPLAY ── */
   #uptime { font-family: var(--mono); font-size: 12px; color: var(--muted); }
-
-  /* ── SCROLLBAR ── */
-  ::-webkit-scrollbar { width: 6px; height: 6px; }
-  ::-webkit-scrollbar-track { background: var(--bg); }
-  ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+  ::-webkit-scrollbar { width: 6px; } ::-webkit-scrollbar-track { background: var(--bg); } ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
 </style>
 </head>
 <body>
@@ -436,291 +149,376 @@
 
 <main>
 
-  <!-- Auth -->
-  <div id="auth-banner">
-    <label>Dashboard Secret</label>
-    <input type="password" id="secret-input" placeholder="Enter your DASHBOARD_SECRET" autocomplete="current-password" />
-    <button id="unlock-btn" onclick="checkSecret()">Unlock</button>
-  </div>
+<!-- ── Auth ────────────────────────────────────────────────────────────────── -->
+<div id="auth-banner">
+  <label>Dashboard Secret</label>
+  <input type="password" id="secret-input" placeholder="Enter your DASHBOARD_SECRET" autocomplete="current-password" />
+  <button id="unlock-btn" onclick="checkSecret()">Unlock</button>
+</div>
 
-  <!-- Stats -->
-  <div class="stats-grid">
-    <div class="stat-card">
-      <div class="stat-label">Total Posted</div>
-      <div class="stat-value" id="total-posted">—</div>
-      <div class="stat-sub">all time</div>
-    </div>
-    <div class="stat-card">
-      <div class="stat-label">Last Posted</div>
-      <div class="stat-value" id="last-posted" style="font-size:18px;line-height:1.2;margin-top:4px">—</div>
-    </div>
-    <div class="stat-card">
-      <div class="stat-label">Queue Pending</div>
-      <div class="stat-value" id="queue-count">—</div>
-      <div class="stat-sub">highlights & spotlights</div>
-    </div>
-    <div class="stat-card">
-      <div class="stat-label">Seen Images</div>
-      <div class="stat-value" id="seen-images">—</div>
-      <div class="stat-sub">tracked IDs</div>
-    </div>
+<!-- ── Stats ────────────────────────────────────────────────────────────────── -->
+<div class="stats-grid">
+  <div class="stat-card">
+    <div class="stat-label">Total Posted</div>
+    <div class="stat-value" id="total-posted">—</div>
+    <div class="stat-sub">all time</div>
   </div>
+  <div class="stat-card">
+    <div class="stat-label">Last Posted</div>
+    <div class="stat-value" id="last-posted" style="font-size:18px;line-height:1.3;margin-top:4px">—</div>
+  </div>
+  <div class="stat-card">
+    <div class="stat-label">Queue</div>
+    <div class="stat-value" id="queue-count">—</div>
+    <div class="stat-sub">pending highlights</div>
+  </div>
+  <div class="stat-card">
+    <div class="stat-label">Seen Images</div>
+    <div class="stat-value" id="seen-images">—</div>
+    <div class="stat-sub">tracked IDs</div>
+  </div>
+</div>
 
-  <!-- Controls -->
-  <div class="section">
-    <div class="section-header">
-      <span class="section-title">Bot Controls</span>
-    </div>
-    <div class="section-body">
-      <div class="btn-row">
-        <button class="success" onclick="btnAction('/api/start', this)">▶ Start Posting</button>
-        <button class="danger"  onclick="btnAction('/api/stop', this)">⏸ Pause Bot</button>
-        <button class="primary" onclick="btnAction('/api/post-now', this)">⚡ Post Now</button>
-        <button onclick="btnAction('/api/clear-queue', this)">✕ Clear Queue</button>
-      </div>
+<!-- ── Bot Controls ──────────────────────────────────────────────────────────── -->
+<div class="section">
+  <div class="section-header"><span class="section-title">Bot Controls</span></div>
+  <div class="section-body">
+    <div class="btn-row">
+      <button class="success" onclick="btnAction('/api/start', this)">▶ Start Posting</button>
+      <button class="danger"  onclick="btnAction('/api/stop', this)">⏸ Pause Bot</button>
+      <button class="primary" onclick="btnAction('/api/post-now', this)">⚡ Post Now</button>
+      <button onclick="btnAction('/api/clear-queue', this)">✕ Clear Queue</button>
     </div>
   </div>
+</div>
 
-  <!-- Album Highlight -->
-  <div class="section">
-    <div class="section-header">
-      <span class="section-title">📂 Album Highlight</span>
-    </div>
-    <div class="section-body" style="display:flex;flex-direction:column;gap:14px">
-      <p style="color:var(--muted);font-size:13px">Queue an album to be announced with its cover photo. The bot will post it at the next scheduled cycle.</p>
-      <div class="form-row">
-        <input type="text" id="album-id" placeholder="Chevereto album ID or hash" />
-        <button class="primary" onclick="queueHighlight(this)">Queue Album</button>
-      </div>
+<!-- ── Album Highlight ───────────────────────────────────────────────────────── -->
+<div class="section">
+  <div class="section-header"><span class="section-title">📂 Album Highlight</span></div>
+  <div class="section-body" style="display:flex;flex-direction:column;gap:14px">
+    <p style="color:var(--muted);font-size:13px">Queue an album to be announced with its cover photo at the next posting cycle.</p>
+    <div class="form-row">
+      <input type="text" id="album-id" placeholder="Chevereto album hash or ID" />
+      <button class="primary" onclick="queueHighlight(this)">Queue Album</button>
     </div>
   </div>
+</div>
 
-  <!-- Member Spotlight -->
-  <div class="section">
-    <div class="section-header">
-      <span class="section-title">🌟 Member Spotlight</span>
-    </div>
-    <div class="section-body" style="display:flex;flex-direction:column;gap:14px">
-      <p style="color:var(--muted);font-size:13px">Showcase a photographer on your team — the bot will post an intro + their 3 most recent photos.</p>
-      <div class="form-row">
-        <input type="text" id="spotlight-username" placeholder="Chevereto username" />
-        <button class="primary" onclick="queueSpotlight(this)">Spotlight Member</button>
-      </div>
+<!-- ── Member Spotlight ──────────────────────────────────────────────────────── -->
+<div class="section">
+  <div class="section-header"><span class="section-title">🌟 Member Spotlight</span></div>
+  <div class="section-body" style="display:flex;flex-direction:column;gap:14px">
+    <p style="color:var(--muted);font-size:13px">Showcase a photographer — intro post + up to 3 of their recent photos.</p>
+    <div class="form-row">
+      <input type="text" id="spotlight-username" placeholder="Chevereto username" />
+      <button class="primary" onclick="queueSpotlight(this)">Spotlight Member</button>
     </div>
   </div>
+</div>
 
-  <!-- Queue -->
-  <div class="section">
-    <div class="section-header">
-      <span class="section-title">Post Queue</span>
-      <button onclick="loadStatus()" style="font-size:10px;padding:5px 10px">↻ Refresh</button>
-    </div>
-    <div class="section-body">
-      <div class="queue-list" id="queue-list">
-        <div class="queue-empty">No items in queue</div>
-      </div>
+<!-- ── Post Queue ────────────────────────────────────────────────────────────── -->
+<div class="section">
+  <div class="section-header">
+    <span class="section-title">Post Queue</span>
+    <button onclick="loadQueue()" style="font-size:10px;padding:5px 10px">↻ Refresh</button>
+  </div>
+  <div class="section-body">
+    <div class="queue-list" id="queue-list">
+      <div class="queue-empty">Queue is empty</div>
     </div>
   </div>
+</div>
 
-  <!-- DM Commands Reference -->
-  <div class="section">
-    <div class="section-header">
-      <span class="section-title">DM Command Reference</span>
-    </div>
-    <div class="section-body">
-      <div class="cmd-grid">
-        <span class="cmd">!start</span>           <span class="cmd-desc">Resume auto-posting</span>
-        <span class="cmd">!stop</span>            <span class="cmd-desc">Pause auto-posting</span>
-        <span class="cmd">!status</span>          <span class="cmd-desc">Show current bot state &amp; stats</span>
-        <span class="cmd">!post now</span>        <span class="cmd-desc">Trigger an immediate batch post</span>
-        <span class="cmd">!stats</span>           <span class="cmd-desc">Show posting statistics</span>
-        <span class="cmd">!highlight &lt;id&gt;</span>  <span class="cmd-desc">Queue an album highlight by ID</span>
-        <span class="cmd">!spotlight &lt;user&gt;</span> <span class="cmd-desc">Showcase a team member</span>
-        <span class="cmd">!help</span>            <span class="cmd-desc">List all available commands</span>
-      </div>
-      <p style="margin-top:16px;font-size:12px;color:var(--muted)">Send commands via Bluesky DM from any handle listed in <code style="font-family:var(--mono);color:var(--accent2)">ADMIN_HANDLES</code> in your .env file.</p>
+<!-- ── Spotlight History ─────────────────────────────────────────────────────── -->
+<div class="section">
+  <div class="section-header">
+    <span class="section-title">🕐 Creator Feature History</span>
+    <button onclick="loadHistory()" style="font-size:10px;padding:5px 10px">↻ Refresh</button>
+  </div>
+  <div class="section-body">
+    <div id="history-container">
+      <div class="queue-empty">No spotlights posted yet</div>
     </div>
   </div>
+</div>
 
-  <!-- Activity Log -->
-  <div class="section">
-    <div class="section-header">
-      <span class="section-title">Activity Log</span>
+<!-- ── Message Templates ─────────────────────────────────────────────────────── -->
+<div class="section">
+  <div class="section-header">
+    <span class="section-title">✏️ Message Templates</span>
+  </div>
+  <div class="section-body" style="display:flex;flex-direction:column;gap:20px">
+    <p style="color:var(--muted);font-size:13px">Customize how posts are worded. Changes take effect on the next post cycle.</p>
+
+    <div>
+      <label class="field-label">Regular Post <span style="color:var(--accent2);font-size:9px">· {username} {title} {tags} {url}</span></label>
+      <textarea id="tpl-regularPost" rows="3" placeholder="Loading…"></textarea>
     </div>
-    <div class="section-body">
-      <div id="log-output"></div>
+    <div>
+      <label class="field-label">Album Highlight <span style="color:var(--accent2);font-size:9px">· {title}</span></label>
+      <textarea id="tpl-albumHighlight" rows="3" placeholder="Loading…"></textarea>
+    </div>
+    <div>
+      <label class="field-label">Member Spotlight <span style="color:var(--accent2);font-size:9px">· {name} {username}</span></label>
+      <textarea id="tpl-memberSpotlight" rows="3" placeholder="Loading…"></textarea>
+    </div>
+    <div>
+      <label class="field-label">VRCX Reply <span style="color:var(--accent2);font-size:9px">· {worldName} {worldAuthor} {instanceId}</span></label>
+      <textarea id="tpl-vrcxReply" rows="3" placeholder="Loading…"></textarea>
+    </div>
+    <div class="btn-row">
+      <button class="primary" onclick="saveTemplates(this)">Save Templates</button>
+      <button onclick="loadTemplates()">↻ Reset</button>
     </div>
   </div>
+</div>
+
+<!-- ── DM Commands ────────────────────────────────────────────────────────────── -->
+<div class="section">
+  <div class="section-header"><span class="section-title">DM Command Reference</span></div>
+  <div class="section-body">
+    <div class="cmd-grid">
+      <span class="cmd">!start</span>               <span class="cmd-desc">Resume auto-posting</span>
+      <span class="cmd">!stop</span>                <span class="cmd-desc">Pause auto-posting</span>
+      <span class="cmd">!status</span>              <span class="cmd-desc">Show bot state &amp; stats</span>
+      <span class="cmd">!stats</span>               <span class="cmd-desc">Posting statistics</span>
+      <span class="cmd">!post now</span>            <span class="cmd-desc">Trigger an immediate batch</span>
+      <span class="cmd">!highlight &lt;id&gt;</span>    <span class="cmd-desc">Queue an album highlight</span>
+      <span class="cmd">!spotlight &lt;user&gt;</span>  <span class="cmd-desc">Showcase a team member</span>
+      <span class="cmd">!help</span>                <span class="cmd-desc">List all commands</span>
+    </div>
+    <p style="margin-top:16px;font-size:12px;color:var(--muted)">Send from any handle in <code style="font-family:var(--mono);color:var(--accent2)">ADMIN_HANDLES</code> via Bluesky DM.</p>
+  </div>
+</div>
+
+<!-- ── Activity Log ───────────────────────────────────────────────────────────── -->
+<div class="section">
+  <div class="section-header"><span class="section-title">Activity Log</span></div>
+  <div class="section-body"><div id="log-output"></div></div>
+</div>
 
 </main>
-
 <div id="toast"></div>
 
 <script>
   let SECRET = '';
   let pollInterval;
-  const FETCH_TIMEOUT_MS = 8000;
+  const TIMEOUT = 8000;
 
-  // ── Core fetch with timeout ───────────────────────────────────────────────
-  // Every request goes through here so nothing can stall the UI indefinitely.
+  // ── Fetch wrapper with timeout ──────────────────────────────────────────────
   async function apiFetch(path, method = 'GET', body = null) {
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
-
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), TIMEOUT);
     try {
-      const opts = {
-        method,
-        signal: controller.signal,
-        headers: {
-          'Content-Type': 'application/json',
-          'x-dashboard-secret': SECRET,
-        },
-      };
-      if (body) opts.body = JSON.stringify(body);
-
-      const res = await fetch(path, opts);
+      const res = await fetch(path, {
+        method, signal: ctrl.signal,
+        headers: { 'Content-Type': 'application/json', 'x-dashboard-secret': SECRET },
+        ...(body ? { body: JSON.stringify(body) } : {}),
+      });
       const data = await res.json();
-      // Propagate HTTP errors so callers can detect 401 etc.
       if (!res.ok) data._httpStatus = res.status;
       return data;
     } catch (err) {
-      if (err.name === 'AbortError') throw new Error('Request timed out after 8 s');
+      if (err.name === 'AbortError') throw new Error('Request timed out');
       throw err;
-    } finally {
-      clearTimeout(timer);
-    }
+    } finally { clearTimeout(timer); }
   }
 
-  // ── Auth ──────────────────────────────────────────────────────────────────
+  // ── Auth ────────────────────────────────────────────────────────────────────
   const unlockBtn = document.getElementById('unlock-btn');
 
   async function checkSecret() {
-    const input = document.getElementById('secret-input');
-    const candidate = input.value.trim();
-    if (!candidate) { toast('Enter your DASHBOARD_SECRET first', 'err'); return; }
-
-    // Show loading state
-    unlockBtn.disabled = true;
-    unlockBtn.textContent = 'Checking…';
-
+    const candidate = document.getElementById('secret-input').value.trim();
+    if (!candidate) { toast('Enter your DASHBOARD_SECRET', 'err'); return; }
+    unlockBtn.disabled = true; unlockBtn.textContent = 'Checking…';
     try {
-      // Temporarily use the candidate secret for this one call
       SECRET = candidate;
       const data = await apiFetch('/api/verify', 'POST');
-
       if (data._httpStatus === 401 || data.error) {
         SECRET = '';
-        toast('Wrong secret — check your DASHBOARD_SECRET in .env', 'err');
-        unlockBtn.disabled = false;
-        unlockBtn.textContent = 'Unlock';
+        toast('Wrong secret — check your .env', 'err');
+        unlockBtn.disabled = false; unlockBtn.textContent = 'Unlock';
         return;
       }
-
-      // ✅ Authenticated
       document.getElementById('auth-banner').style.display = 'none';
       toast('Unlocked ✓', 'ok');
       log('Dashboard authenticated', 'ok');
-      loadStatus();
+      loadAll();
       startPolling();
-
     } catch (err) {
       SECRET = '';
-      toast('Could not reach server: ' + err.message, 'err');
-      unlockBtn.disabled = false;
-      unlockBtn.textContent = 'Unlock';
+      toast('Server error: ' + err.message, 'err');
+      unlockBtn.disabled = false; unlockBtn.textContent = 'Unlock';
     }
   }
 
-  // Allow Enter key in the secret field
   document.getElementById('secret-input').addEventListener('keydown', e => {
     if (e.key === 'Enter') checkSecret();
   });
 
-  // ── Action helper ─────────────────────────────────────────────────────────
+  // ── Action helper ───────────────────────────────────────────────────────────
   async function apiAction(path, body = null, btn = null) {
     if (!SECRET) { toast('Unlock the dashboard first', 'err'); return null; }
-
     if (btn) { btn.disabled = true; btn.dataset.orig = btn.textContent; btn.textContent = '…'; }
-
     try {
       const data = await apiFetch(path, 'POST', body);
-      if (data._httpStatus === 401) { toast('Unauthorized — wrong secret?', 'err'); return null; }
+      if (data._httpStatus === 401) { toast('Unauthorized', 'err'); return null; }
       if (data.error) { toast(data.error, 'err'); return null; }
       toast('Done ✓', 'ok');
       loadStatus();
       return data;
     } catch (err) {
-      toast('Request failed: ' + err.message, 'err');
+      toast('Failed: ' + err.message, 'err');
       return null;
     } finally {
-      if (btn) { btn.disabled = false; btn.textContent = btn.dataset.orig; }
+      if (btn) { btn.disabled = false; btn.textContent = btn.dataset.orig || btn.textContent; }
     }
   }
 
-  // ── Status polling ────────────────────────────────────────────────────────
+  function btnAction(path, btn) { apiAction(path, null, btn); }
+
+  // ── Status ──────────────────────────────────────────────────────────────────
   async function loadStatus() {
     try {
       const s = await apiFetch('/api/status');
       if (!s || s.error) return;
 
-      const dot = document.getElementById('status-dot');
-      const txt = document.getElementById('status-text');
-      dot.className = 'status-dot ' + (s.running ? 'running' : 'paused');
-      txt.textContent = s.running ? 'running' : 'paused';
-
+      document.getElementById('status-dot').className  = 'status-dot ' + (s.running ? 'running' : 'paused');
+      document.getElementById('status-text').textContent = s.running ? 'running' : 'paused';
       document.getElementById('total-posted').textContent = s.totalPosted ?? '—';
       document.getElementById('queue-count').textContent  = s.pendingQueue ?? '—';
       document.getElementById('seen-images').textContent  = s.seenImages   ?? '—';
 
       const lp = s.lastPostedAt ? new Date(s.lastPostedAt) : null;
       document.getElementById('last-posted').textContent = lp
-        ? lp.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) +
-          '\n' + lp.toLocaleDateString()
+        ? lp.toLocaleTimeString([], { hour:'2-digit', minute:'2-digit' }) + '\n' + lp.toLocaleDateString()
         : '—';
 
       const u = Math.floor(s.uptime ?? 0);
-      const h = Math.floor(u / 3600), m = Math.floor((u % 3600) / 60), sec = u % 60;
       document.getElementById('uptime').textContent =
-        `up ${h}h ${String(m).padStart(2, '0')}m ${String(sec).padStart(2, '0')}s`;
+        `up ${Math.floor(u/3600)}h ${String(Math.floor((u%3600)/60)).padStart(2,'0')}m ${String(u%60).padStart(2,'0')}s`;
+    } catch {}
+  }
 
-    } catch (e) { /* silently ignore poll failures */ }
+  // ── Queue ───────────────────────────────────────────────────────────────────
+  async function loadQueue() {
+    if (!SECRET) return;
+    try {
+      const data = await apiFetch('/api/queue');
+      const list = document.getElementById('queue-list');
+      if (!data.queue || data.queue.length === 0) {
+        list.innerHTML = '<div class="queue-empty">Queue is empty</div>';
+        return;
+      }
+      list.innerHTML = data.queue.map(item => {
+        const badge = item.type === 'album'
+          ? '<span class="queue-badge badge-album">Album</span>'
+          : '<span class="queue-badge badge-spotlight">Spotlight</span>';
+        const label = item.type === 'album'
+          ? (item.title || item.albumId)
+          : `@${item.username}`;
+        const time = item.queuedAt
+          ? new Date(item.queuedAt).toLocaleTimeString([], { hour:'2-digit', minute:'2-digit' })
+          : '';
+        return `<div class="queue-item">${badge}<span>${label}</span><span class="queue-time">${time}</span></div>`;
+      }).join('');
+    } catch {}
+  }
+
+  // ── Spotlight history ───────────────────────────────────────────────────────
+  async function loadHistory() {
+    if (!SECRET) return;
+    try {
+      const data = await apiFetch('/api/spotlight-history');
+      const container = document.getElementById('history-container');
+      if (!data.history || data.history.length === 0) {
+        container.innerHTML = '<div class="queue-empty">No spotlights posted yet</div>';
+        return;
+      }
+      container.innerHTML = `
+        <table class="history-table">
+          <thead><tr><th>Member</th><th>Username</th><th>Last Featured</th></tr></thead>
+          <tbody>
+            ${data.history.map(h => `
+              <tr>
+                <td>${h.name ?? h.username}</td>
+                <td style="font-family:var(--mono);font-size:12px;color:var(--accent2)">@${h.username}</td>
+                <td class="hl-time">${h.featuredAt ? new Date(h.featuredAt).toLocaleString() : '—'}</td>
+              </tr>`).join('')}
+          </tbody>
+        </table>`;
+    } catch {}
+  }
+
+  // ── Templates ───────────────────────────────────────────────────────────────
+  async function loadTemplates() {
+    if (!SECRET) return;
+    try {
+      const data = await apiFetch('/api/templates');
+      if (!data.templates) return;
+      const t = data.templates;
+      document.getElementById('tpl-regularPost').value     = t.regularPost     || '';
+      document.getElementById('tpl-albumHighlight').value  = t.albumHighlight  || '';
+      document.getElementById('tpl-memberSpotlight').value = t.memberSpotlight || '';
+      document.getElementById('tpl-vrcxReply').value       = t.vrcxReply       || '';
+    } catch {}
+  }
+
+  async function saveTemplates(btn) {
+    const templates = {
+      regularPost:     document.getElementById('tpl-regularPost').value,
+      albumHighlight:  document.getElementById('tpl-albumHighlight').value,
+      memberSpotlight: document.getElementById('tpl-memberSpotlight').value,
+      vrcxReply:       document.getElementById('tpl-vrcxReply').value,
+    };
+    await apiAction('/api/templates', { templates }, btn);
+    log('Templates saved', 'ok');
+  }
+
+  // ── Queue forms ─────────────────────────────────────────────────────────────
+  async function queueHighlight(btn) {
+    const albumId = document.getElementById('album-id').value.trim();
+    if (!albumId) { toast('Enter an album ID', 'err'); return; }
+    const res = await apiAction('/api/highlight', { albumId }, btn);
+    if (res) {
+      log(`Album queued: ${res.album}`, 'ok');
+      document.getElementById('album-id').value = '';
+      loadQueue();
+    }
+  }
+
+  async function queueSpotlight(btn) {
+    const username = document.getElementById('spotlight-username').value.trim();
+    if (!username) { toast('Enter a username', 'err'); return; }
+    const res = await apiAction('/api/spotlight', { username }, btn);
+    if (res) {
+      const imgNote = res.imageCount > 0 ? ` (${res.imageCount} images found)` : ' ⚠ no images found';
+      log(`Spotlight queued: @${res.user}${imgNote}`, 'ok');
+      document.getElementById('spotlight-username').value = '';
+      loadQueue();
+    }
+  }
+
+  // ── Load all authenticated data ─────────────────────────────────────────────
+  function loadAll() {
+    loadStatus();
+    loadQueue();
+    loadHistory();
+    loadTemplates();
   }
 
   function startPolling() {
     if (pollInterval) clearInterval(pollInterval);
-    pollInterval = setInterval(loadStatus, 10_000);
+    pollInterval = setInterval(() => {
+      loadStatus();
+      loadQueue();
+    }, 10_000);
   }
 
-  // ── Control buttons ───────────────────────────────────────────────────────
-  function btnAction(path, btnEl) {
-    apiAction(path, null, btnEl);
-  }
-
-  // ── Queue forms ───────────────────────────────────────────────────────────
-  async function queueHighlight(btnEl) {
-    const albumId = document.getElementById('album-id').value.trim();
-    if (!albumId) { toast('Enter an album ID', 'err'); return; }
-    const res = await apiAction('/api/highlight', { albumId }, btnEl);
-    if (res) {
-      log(`Album queued: ${res.album}`, 'ok');
-      document.getElementById('album-id').value = '';
-    }
-  }
-
-  async function queueSpotlight(btnEl) {
-    const username = document.getElementById('spotlight-username').value.trim();
-    if (!username) { toast('Enter a username', 'err'); return; }
-    const res = await apiAction('/api/spotlight', { username }, btnEl);
-    if (res) {
-      log(`Spotlight queued: @${res.user}`, 'ok');
-      document.getElementById('spotlight-username').value = '';
-    }
-  }
-
-  // ── Activity log ──────────────────────────────────────────────────────────
+  // ── Log ─────────────────────────────────────────────────────────────────────
   const logLines = [];
   function log(msg, type = 'info') {
-    const time = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+    const time = new Date().toLocaleTimeString([], { hour:'2-digit', minute:'2-digit', second:'2-digit' });
     logLines.unshift({ time, msg, type });
     if (logLines.length > 50) logLines.pop();
     document.getElementById('log-output').innerHTML = logLines
@@ -728,17 +526,16 @@
       .join('');
   }
 
-  // ── Toast ─────────────────────────────────────────────────────────────────
+  // ── Toast ────────────────────────────────────────────────────────────────────
   let toastTimer;
   function toast(msg, type = 'ok') {
     const el = document.getElementById('toast');
-    el.textContent = msg;
-    el.className = `show ${type}`;
+    el.textContent = msg; el.className = `show ${type}`;
     clearTimeout(toastTimer);
     toastTimer = setTimeout(() => { el.className = ''; }, 3500);
   }
 
-  // ── Init — load public status on page load ─────────────────────────────────
+  // ── Init ─────────────────────────────────────────────────────────────────────
   loadStatus();
   setInterval(() => { if (!SECRET) loadStatus(); }, 15_000);
 </script>
