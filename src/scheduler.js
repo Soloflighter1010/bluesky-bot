@@ -29,21 +29,19 @@ function cleanTitle(title) {
   return title;
 }
 
-function buildPostText(images, templates) {
-  // For a multi-image post, mention all unique uploaders
+function buildPostText(images, templates, customTags = []) {
   const usernames = [...new Set(
     images.map(img => img.user?.username).filter(Boolean)
   )].map(u => `@${u}`).join(' ');
 
-  // Collect titles, skipping raw VRChat filenames
   const titles = images
     .map(img => cleanTitle(img.title))
     .filter(Boolean)
-    .slice(0, 2) // don't bloat the post with 4 separate titles
+    .slice(0, 2)
     .join(' · ');
 
   const tpl  = templates?.regularPost || '📸 {username}\n{title}\n{tags}';
-  const tags = ['#photography', '#VRChat'].join(' ');
+  const tags = customTags.length ? customTags.join(' ') : '#photography';
 
   let text = renderTemplate(tpl, {
     username: usernames,
@@ -204,7 +202,7 @@ async function postBatch(state, staggerMs) {
   }
 
   // ── Post all images in a single Bluesky post ───────────────────────────────
-  const text     = buildPostText(downloaded.map(d => d.image), state.templates);
+  const text     = buildPostText(downloaded.map(d => d.image), state.templates, state.customTags ?? []);
   const entries  = downloaded.map(d => ({ image: d.image, blob: d.blob }));
   let   postRef  = null;
 
