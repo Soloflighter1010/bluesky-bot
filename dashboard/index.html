@@ -440,7 +440,7 @@
   <div id="auth-banner">
     <label>Dashboard Secret</label>
     <input type="password" id="secret-input" placeholder="Enter your DASHBOARD_SECRET" autocomplete="current-password" />
-    <button onclick="checkSecret()">Unlock</button>
+    <button id="unlock-btn" onclick="checkSecret()">Unlock</button>
   </div>
 
   <!-- Stats -->
@@ -473,10 +473,10 @@
     </div>
     <div class="section-body">
       <div class="btn-row">
-        <button class="success" onclick="apiAction('/api/start')">▶ Start Posting</button>
-        <button class="danger"  onclick="apiAction('/api/stop')">⏸ Pause Bot</button>
-        <button class="primary" onclick="apiAction('/api/post-now')">⚡ Post Now</button>
-        <button onclick="apiAction('/api/clear-queue')">✕ Clear Queue</button>
+        <button class="success" onclick="btnAction('/api/start', this)">▶ Start Posting</button>
+        <button class="danger"  onclick="btnAction('/api/stop', this)">⏸ Pause Bot</button>
+        <button class="primary" onclick="btnAction('/api/post-now', this)">⚡ Post Now</button>
+        <button onclick="btnAction('/api/clear-queue', this)">✕ Clear Queue</button>
       </div>
     </div>
   </div>
@@ -490,7 +490,7 @@
       <p style="color:var(--muted);font-size:13px">Queue an album to be announced with its cover photo. The bot will post it at the next scheduled cycle.</p>
       <div class="form-row">
         <input type="text" id="album-id" placeholder="Chevereto album ID or hash" />
-        <button class="primary" onclick="queueHighlight()">Queue Album</button>
+        <button class="primary" onclick="queueHighlight(this)">Queue Album</button>
       </div>
     </div>
   </div>
@@ -504,7 +504,7 @@
       <p style="color:var(--muted);font-size:13px">Showcase a photographer on your team — the bot will post an intro + their 3 most recent photos.</p>
       <div class="form-row">
         <input type="text" id="spotlight-username" placeholder="Chevereto username" />
-        <button class="primary" onclick="queueSpotlight()">Spotlight Member</button>
+        <button class="primary" onclick="queueSpotlight(this)">Spotlight Member</button>
       </div>
     </div>
   </div>
@@ -559,39 +559,101 @@
 <script>
   let SECRET = '';
   let pollInterval;
+  const FETCH_TIMEOUT_MS = 8000;
+
+  // ── Core fetch with timeout ───────────────────────────────────────────────
+  // Every request goes through here so nothing can stall the UI indefinitely.
+  async function apiFetch(path, method = 'GET', body = null) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
+
+    try {
+      const opts = {
+        method,
+        signal: controller.signal,
+        headers: {
+          'Content-Type': 'application/json',
+          'x-dashboard-secret': SECRET,
+        },
+      };
+      if (body) opts.body = JSON.stringify(body);
+
+      const res = await fetch(path, opts);
+      const data = await res.json();
+      // Propagate HTTP errors so callers can detect 401 etc.
+      if (!res.ok) data._httpStatus = res.status;
+      return data;
+    } catch (err) {
+      if (err.name === 'AbortError') throw new Error('Request timed out after 8 s');
+      throw err;
+    } finally {
+      clearTimeout(timer);
+    }
+  }
 
   // ── Auth ──────────────────────────────────────────────────────────────────
-  function checkSecret() {
-    SECRET = document.getElementById('secret-input').value.trim();
-    if (!SECRET) return toast('Enter your DASHBOARD_SECRET first', 'err');
-    document.getElementById('auth-banner').style.opacity = '0.5';
-    loadStatus();
-    startPolling();
-    log('Authenticated – polling status', 'info');
+  const unlockBtn = document.getElementById('unlock-btn');
+
+  async function checkSecret() {
+    const input = document.getElementById('secret-input');
+    const candidate = input.value.trim();
+    if (!candidate) { toast('Enter your DASHBOARD_SECRET first', 'err'); return; }
+
+    // Show loading state
+    unlockBtn.disabled = true;
+    unlockBtn.textContent = 'Checking…';
+
+    try {
+      // Temporarily use the candidate secret for this one call
+      SECRET = candidate;
+      const data = await apiFetch('/api/verify', 'POST');
+
+      if (data._httpStatus === 401 || data.error) {
+        SECRET = '';
+        toast('Wrong secret — check your DASHBOARD_SECRET in .env', 'err');
+        unlockBtn.disabled = false;
+        unlockBtn.textContent = 'Unlock';
+        return;
+      }
+
+      // ✅ Authenticated
+      document.getElementById('auth-banner').style.display = 'none';
+      toast('Unlocked ✓', 'ok');
+      log('Dashboard authenticated', 'ok');
+      loadStatus();
+      startPolling();
+
+    } catch (err) {
+      SECRET = '';
+      toast('Could not reach server: ' + err.message, 'err');
+      unlockBtn.disabled = false;
+      unlockBtn.textContent = 'Unlock';
+    }
   }
 
-  // ── API helpers ──────────────────────────────────────────────────────────
-  async function apiFetch(path, method = 'GET', body = null) {
-    const opts = {
-      method,
-      headers: { 'x-dashboard-secret': SECRET, 'Content-Type': 'application/json' },
-    };
-    if (body) opts.body = JSON.stringify(body);
-    const res = await fetch(path, opts);
-    return res.json();
-  }
+  // Allow Enter key in the secret field
+  document.getElementById('secret-input').addEventListener('keydown', e => {
+    if (e.key === 'Enter') checkSecret();
+  });
 
-  async function apiAction(path, body = null) {
-    if (!SECRET) return toast('Unlock the dashboard first', 'err');
+  // ── Action helper ─────────────────────────────────────────────────────────
+  async function apiAction(path, body = null, btn = null) {
+    if (!SECRET) { toast('Unlock the dashboard first', 'err'); return null; }
+
+    if (btn) { btn.disabled = true; btn.dataset.orig = btn.textContent; btn.textContent = '…'; }
+
     try {
       const data = await apiFetch(path, 'POST', body);
+      if (data._httpStatus === 401) { toast('Unauthorized — wrong secret?', 'err'); return null; }
       if (data.error) { toast(data.error, 'err'); return null; }
       toast('Done ✓', 'ok');
       loadStatus();
       return data;
-    } catch (e) {
-      toast('Request failed: ' + e.message, 'err');
+    } catch (err) {
+      toast('Request failed: ' + err.message, 'err');
       return null;
+    } finally {
+      if (btn) { btn.disabled = false; btn.textContent = btn.dataset.orig; }
     }
   }
 
@@ -599,31 +661,29 @@
   async function loadStatus() {
     try {
       const s = await apiFetch('/api/status');
-      if (s.error) return;
+      if (!s || s.error) return;
 
-      // Dot & text
-      const dot  = document.getElementById('status-dot');
-      const txt  = document.getElementById('status-text');
+      const dot = document.getElementById('status-dot');
+      const txt = document.getElementById('status-text');
       dot.className = 'status-dot ' + (s.running ? 'running' : 'paused');
       txt.textContent = s.running ? 'running' : 'paused';
 
-      // Stats
-      document.getElementById('total-posted').textContent = s.totalPosted;
-      document.getElementById('queue-count').textContent  = s.pendingQueue;
-      document.getElementById('seen-images').textContent  = s.seenImages;
+      document.getElementById('total-posted').textContent = s.totalPosted ?? '—';
+      document.getElementById('queue-count').textContent  = s.pendingQueue ?? '—';
+      document.getElementById('seen-images').textContent  = s.seenImages   ?? '—';
 
       const lp = s.lastPostedAt ? new Date(s.lastPostedAt) : null;
       document.getElementById('last-posted').textContent = lp
-        ? lp.toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'}) + '\n' + lp.toLocaleDateString()
+        ? lp.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) +
+          '\n' + lp.toLocaleDateString()
         : '—';
 
-      // Uptime
-      const u = Math.floor(s.uptime);
-      const h = Math.floor(u/3600), m = Math.floor((u%3600)/60), sec = u%60;
+      const u = Math.floor(s.uptime ?? 0);
+      const h = Math.floor(u / 3600), m = Math.floor((u % 3600) / 60), sec = u % 60;
       document.getElementById('uptime').textContent =
-        `up ${h}h ${String(m).padStart(2,'0')}m ${String(sec).padStart(2,'0')}s`;
+        `up ${h}h ${String(m).padStart(2, '0')}m ${String(sec).padStart(2, '0')}s`;
 
-    } catch (e) { /* server might not be reachable */ }
+    } catch (e) { /* silently ignore poll failures */ }
   }
 
   function startPolling() {
@@ -631,55 +691,56 @@
     pollInterval = setInterval(loadStatus, 10_000);
   }
 
-  // ── Queue ─────────────────────────────────────────────────────────────────
-  async function queueHighlight() {
+  // ── Control buttons ───────────────────────────────────────────────────────
+  function btnAction(path, btnEl) {
+    apiAction(path, null, btnEl);
+  }
+
+  // ── Queue forms ───────────────────────────────────────────────────────────
+  async function queueHighlight(btnEl) {
     const albumId = document.getElementById('album-id').value.trim();
-    if (!albumId) return toast('Enter an album ID', 'err');
-    const res = await apiAction('/api/highlight', { albumId });
+    if (!albumId) { toast('Enter an album ID', 'err'); return; }
+    const res = await apiAction('/api/highlight', { albumId }, btnEl);
     if (res) {
       log(`Album queued: ${res.album}`, 'ok');
       document.getElementById('album-id').value = '';
     }
   }
 
-  async function queueSpotlight() {
+  async function queueSpotlight(btnEl) {
     const username = document.getElementById('spotlight-username').value.trim();
-    if (!username) return toast('Enter a username', 'err');
-    const res = await apiAction('/api/spotlight', { username });
+    if (!username) { toast('Enter a username', 'err'); return; }
+    const res = await apiAction('/api/spotlight', { username }, btnEl);
     if (res) {
       log(`Spotlight queued: @${res.user}`, 'ok');
       document.getElementById('spotlight-username').value = '';
     }
   }
 
-  // ── Log helper ─────────────────────────────────────────────────────────────
+  // ── Activity log ──────────────────────────────────────────────────────────
   const logLines = [];
-  function log(msg, type = '') {
-    const time = new Date().toLocaleTimeString([], {hour:'2-digit',minute:'2-digit',second:'2-digit'});
+  function log(msg, type = 'info') {
+    const time = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
     logLines.unshift({ time, msg, type });
     if (logLines.length > 50) logLines.pop();
-    const el = document.getElementById('log-output');
-    el.innerHTML = logLines.map(l =>
-      `<div class="log-line"><span class="log-time">${l.time}</span><span class="log-${l.type||'info'}">${l.msg}</span></div>`
-    ).join('');
+    document.getElementById('log-output').innerHTML = logLines
+      .map(l => `<div class="log-line"><span class="log-time">${l.time}</span><span class="log-${l.type}">${l.msg}</span></div>`)
+      .join('');
   }
 
-  // ── Toast ──────────────────────────────────────────────────────────────────
+  // ── Toast ─────────────────────────────────────────────────────────────────
   let toastTimer;
   function toast(msg, type = 'ok') {
     const el = document.getElementById('toast');
     el.textContent = msg;
     el.className = `show ${type}`;
     clearTimeout(toastTimer);
-    toastTimer = setTimeout(() => { el.className = ''; }, 3000);
+    toastTimer = setTimeout(() => { el.className = ''; }, 3500);
   }
 
-  // ── Init ──────────────────────────────────────────────────────────────────
-  // Auto-load status (no auth needed for read)
+  // ── Init — load public status on page load ─────────────────────────────────
   loadStatus();
-  setInterval(() => {
-    if (!SECRET) loadStatus();
-  }, 15_000);
+  setInterval(() => { if (!SECRET) loadStatus(); }, 15_000);
 </script>
 </body>
 </html>
