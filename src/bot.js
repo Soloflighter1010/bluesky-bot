@@ -53,6 +53,7 @@ async function main() {
 
   // Start dashboard
   dashboard.startDashboard(state, postNow);
+  logger.info(`Dashboard secret loaded — length: ${(process.env.DASHBOARD_SECRET || '').trim().length} chars`);
 
   // Post immediately on startup so you don't wait an hour for the first post
   logger.info('Running initial post cycle on startup…');
