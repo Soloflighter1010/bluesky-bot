@@ -242,6 +242,19 @@
   </div>
 </div>
 
+<!-- ── Custom Tags ─────────────────────────────────────────────────────────────── -->
+<div class="section">
+  <div class="section-header"><span class="section-title"># Custom Tags</span></div>
+  <div class="section-body" style="display:flex;flex-direction:column;gap:14px">
+    <p style="color:var(--muted);font-size:13px">These tags are injected into the <code style="font-family:var(--mono);color:var(--accent2)">{tags}</code> variable in the regular post template. Enter one tag per line, with or without the <code style="font-family:var(--mono);color:var(--accent2)">#</code>.</p>
+    <textarea id="tags-input" rows="5" placeholder="Loading…" spellcheck="false"></textarea>
+    <div class="btn-row">
+      <button class="primary" onclick="saveTags(this)">Save Tags</button>
+      <button onclick="loadTags()">↻ Reset</button>
+    </div>
+  </div>
+</div>
+
 <!-- ── Message Templates ─────────────────────────────────────────────────────── -->
 <div class="section">
   <div class="section-header">
@@ -499,11 +512,33 @@
     }
   }
 
+  // ── Tags ─────────────────────────────────────────────────────────────────────
+  async function loadTags() {
+    if (!SECRET) return;
+    try {
+      const data = await apiFetch('/api/tags');
+      if (data.tags) {
+        document.getElementById('tags-input').value = data.tags.join('\n');
+      }
+    } catch {}
+  }
+
+  async function saveTags(btn) {
+    const raw  = document.getElementById('tags-input').value;
+    const tags = raw.split('\n').map(t => t.trim()).filter(Boolean);
+    const res  = await apiAction('/api/tags', { tags }, btn);
+    if (res) {
+      document.getElementById('tags-input').value = res.tags.join('\n');
+      log(`Tags saved: ${res.tags.join(' ')}`, 'ok');
+    }
+  }
+
   // ── Load all authenticated data ─────────────────────────────────────────────
   function loadAll() {
     loadStatus();
     loadQueue();
     loadHistory();
+    loadTags();
     loadTemplates();
   }
 
