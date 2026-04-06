@@ -9,9 +9,9 @@
 const axios  = require('axios');
 const logger = require('./logger');
 
-const BASE_URL   = process.env.CHEVERETO_BASE_URL?.replace(/\/$/, '');
-const API_KEY    = process.env.CHEVERETO_API_KEY;
-const BIAS       = parseFloat(process.env.RECENCY_BIAS || '3.0');
+const BASE_URL = process.env.CHEVERETO_BASE_URL?.replace(/\/$/, '');
+const API_KEY  = process.env.CHEVERETO_API_KEY;
+const BIAS     = parseFloat(process.env.RECENCY_BIAS || '3.0');
 
 // ─── HTTP client ─────────────────────────────────────────────────────────────
 
@@ -21,31 +21,56 @@ const api = axios.create({
   params: { key: API_KEY },
 });
 
+// Log the full error response body on 4xx so misconfigurations are obvious
+api.interceptors.response.use(
+  res => res,
+  err => {
+    if (err.response) {
+      logger.warn(
+        `Chevereto API ${err.response.status} on ${err.config?.url}: ` +
+        JSON.stringify(err.response.data).slice(0, 300)
+      );
+    }
+    return Promise.reject(err);
+  }
+);
+
 // ─── Image fetching ──────────────────────────────────────────────────────────
 
 /**
- * Fetch a page of images sorted newest-first.
- * Chevereto API: GET /api/1/images?page=N&per_page=100
+ * Fetch one page of images from Chevereto.
+ *
+ * The Chevereto v3/v4 public API only supports `page` as a pagination param.
+ * `per_page` and `sort` are NOT part of the standard API — omitting them
+ * avoids the 400 error. The API returns images newest-first by default.
  */
-async function fetchImages(page = 1, perPage = 100) {
-  const { data } = await api.get('/images', {
-    params: { page, per_page: perPage, sort: 'date_desc' },
-  });
-  return data?.images?.images ?? [];
+async function fetchImages(page = 1) {
+  const { data } = await api.get('/images', { params: { page } });
+
+  // The response shape can vary slightly between Chevereto versions:
+  //   v3: data.images.images[]  (nested)
+  //   v4: data.images[]         (flat array)
+  const imgs =
+    data?.images?.images ??
+    (Array.isArray(data?.images) ? data.images : null) ??
+    [];
+
+  return imgs;
 }
 
 /**
- * Fetch all images up to `maxPages` pages (newest first).
- * With ~1 000 uploads/month per person × 7 people, we cap at 5 pages
- * (500 images) which already covers the most recent several weeks.
+ * Fetch recent images across multiple pages (newest first).
+ * Caps at maxPages to avoid hammering your server on every cycle.
  */
 async function fetchRecentImages(maxPages = 5) {
   const all = [];
   for (let page = 1; page <= maxPages; page++) {
     try {
       const imgs = await fetchImages(page);
+      logger.info(`Chevereto page ${page}: got ${imgs.length} images`);
       all.push(...imgs);
-      if (imgs.length < 100) break; // last page
+      // Chevereto default page size is typically 100; fewer means last page
+      if (imgs.length < 100) break;
     } catch (err) {
       logger.warn(`fetchRecentImages: page ${page} failed – ${err.message}`);
       break;
@@ -54,11 +79,13 @@ async function fetchRecentImages(maxPages = 5) {
   return all;
 }
 
+// ─── Recency-weighted sampling ────────────────────────────────────────────────
+
 /**
- * Assign a recency weight to each image.
- * Images are already sorted newest-first (index 0 = newest).
- * Weight = (N - index)^BIAS   where N = total count
- * This creates a power-law curve: recent photos have much higher probability.
+ * Pick n images using power-law weighting so newer photos are chosen more often.
+ * index 0 = newest image (highest weight).
+ *
+ * weight[i] = (N - i) ^ BIAS
  */
 function weightedSample(images, n, excludeIds = []) {
   const pool = images.filter(img => !excludeIds.includes(img.id_encoded ?? img.id));
@@ -71,7 +98,7 @@ function weightedSample(images, n, excludeIds = []) {
   const picked = [];
   const used   = new Set();
 
-  while (picked.length < Math.min(n, pool.length) && picked.length < pool.length) {
+  while (picked.length < Math.min(n, pool.length)) {
     let r = Math.random() * totalWeight;
     for (let i = 0; i < pool.length; i++) {
       if (used.has(i)) continue;
@@ -89,46 +116,54 @@ function weightedSample(images, n, excludeIds = []) {
 // ─── Album helpers ────────────────────────────────────────────────────────────
 
 async function fetchAlbum(albumIdOrHash) {
-  const { data } = await api.get(`/album?id=${albumIdOrHash}`);
+  const { data } = await api.get('/album', { params: { id: albumIdOrHash } });
   return data?.album ?? null;
 }
 
 async function fetchAlbumImages(albumIdOrHash, page = 1) {
-  const { data } = await api.get(`/album/images`, {
-    params: { id: albumIdOrHash, page, per_page: 20 },
+  const { data } = await api.get('/album/images', {
+    params: { id: albumIdOrHash, page },
   });
-  return data?.images?.images ?? [];
+  return (
+    data?.images?.images ??
+    (Array.isArray(data?.images) ? data.images : null) ??
+    []
+  );
 }
 
 // ─── User helpers ─────────────────────────────────────────────────────────────
 
 async function fetchUser(username) {
-  const { data } = await api.get(`/user?username=${username}`);
+  const { data } = await api.get('/user', { params: { username } });
   return data?.user ?? null;
 }
 
 async function fetchUserImages(username, page = 1) {
-  const { data } = await api.get(`/user/images`, {
-    params: { username, page, per_page: 12, sort: 'date_desc' },
-  });
-  return data?.images?.images ?? [];
+  const { data } = await api.get('/user/images', { params: { username, page } });
+  return (
+    data?.images?.images ??
+    (Array.isArray(data?.images) ? data.images : null) ??
+    []
+  );
 }
 
 // ─── Image download ───────────────────────────────────────────────────────────
 
 /**
- * Download an image as a Buffer for uploading to Bluesky.
- * Uses the medium-sized URL when available to keep uploads under 1 MB.
+ * Download an image as a Buffer.
+ * Prefers the `medium` size URL to stay under Bluesky's 1 MB blob limit.
  */
 async function downloadImage(image) {
   const url = image.medium?.url ?? image.url;
+  if (!url) throw new Error(`No URL found for image ${image.id}`);
+
   const response = await axios.get(url, {
     responseType: 'arraybuffer',
     timeout: 30_000,
   });
   return {
-    buffer: Buffer.from(response.data),
-    mimeType: response.headers['content-type'] || 'image/jpeg',
+    buffer:   Buffer.from(response.data),
+    mimeType: (response.headers['content-type'] || 'image/jpeg').split(';')[0],
   };
 }
 
