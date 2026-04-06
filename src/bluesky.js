@@ -3,11 +3,18 @@
  *
  * Handles session management, blob uploads, rich-text posts,
  * and DM polling for command processing.
+ *
+ * DM NOTE: Bluesky's chat API (chat.bsky.convo.*) is served by a separate
+ * proxy service at api.bsky.chat, not bsky.social. Every chat call must go
+ * through agent.withProxy('bsky_chat', 'did:web:api.bsky.chat') — using the
+ * base agent directly returns "Method Not Implemented".
  */
 
 const { BskyAgent, RichText } = require('@atproto/api');
 const sharp  = require('sharp');
 const logger = require('./logger');
+
+const CHAT_PROXY_DID = 'did:web:api.bsky.chat';
 
 const agent = new BskyAgent({ service: 'https://bsky.social' });
 let   sessionActive = false;
@@ -27,13 +34,20 @@ async function ensureSession() {
   if (!sessionActive) await login();
 }
 
+/**
+ * Returns an agent configured to proxy chat requests through api.bsky.chat.
+ * Must be called after login() — the proxy needs an active session.
+ */
+function chatAgent() {
+  return agent.withProxy('bsky_chat', CHAT_PROXY_DID);
+}
+
 // ─── Image blob upload ────────────────────────────────────────────────────────
 
 const MAX_BLOB_BYTES = 976_560; // Bluesky image limit ~1 MB
 
 async function prepareImageBlob(buffer, mimeType) {
   let buf = buffer;
-  // Re-compress with sharp if over limit
   if (buf.length > MAX_BLOB_BYTES) {
     buf = await sharp(buf)
       .jpeg({ quality: 80, progressive: true })
@@ -52,15 +66,11 @@ async function uploadBlob(buffer, mimeType) {
 
 // ─── Posting ──────────────────────────────────────────────────────────────────
 
-/**
- * Post a single photo with alt text and an optional link back to Chevereto.
- */
 async function postPhoto(image, blob, extraText = '') {
   await ensureSession();
 
   const title = image.title || 'Untitled';
   const user  = image.user?.username ? `📸 @${image.user.username}` : '';
-  const link  = image.url_viewer ?? image.url_short ?? '';
   const tags  = buildHashtags(image);
 
   let postText = [user, title, extraText, tags].filter(Boolean).join('\n').trim();
@@ -71,10 +81,7 @@ async function postPhoto(image, blob, extraText = '') {
 
   const embed = {
     $type: 'app.bsky.embed.images',
-    images: [{
-      image: blob,
-      alt:   title.slice(0, 300),
-    }],
+    images: [{ image: blob, alt: title.slice(0, 300) }],
   };
 
   await agent.post({
@@ -87,9 +94,6 @@ async function postPhoto(image, blob, extraText = '') {
   logger.info(`Posted: "${title}" by ${image.user?.username ?? 'unknown'}`);
 }
 
-/**
- * Post a text-only announcement (album highlight, member spotlight, etc.).
- */
 async function postText(text) {
   await ensureSession();
   const rt = new RichText({ text: text.slice(0, 300) });
@@ -108,19 +112,24 @@ function buildHashtags(image) {
 
 /**
  * Returns new DM messages since the last check.
- * Uses chat.bsky.convo.* lexicons (Bluesky Direct Messages, launched 2024).
+ *
+ * All chat.bsky.convo.* calls are routed through the bsky_chat proxy.
+ * Without this, Bluesky returns "Method Not Implemented".
  */
 async function pollDMs(seenIds = new Set()) {
   await ensureSession();
+  const chat = chatAgent();
   const newMessages = [];
 
   try {
-    const { data: convos } = await agent.api.chat.bsky.convo.listConvos();
+    const { data: convos } = await chat.api.chat.bsky.convo.listConvos();
+
     for (const convo of convos.convos ?? []) {
-      const { data: msgs } = await agent.api.chat.bsky.convo.getMessages({
+      const { data: msgs } = await chat.api.chat.bsky.convo.getMessages({
         convoId: convo.id,
         limit:   10,
       });
+
       for (const msg of msgs.messages ?? []) {
         if (seenIds.has(msg.id)) continue;
         if (msg.$type !== 'chat.bsky.convo.defs#messageView') continue;
@@ -140,12 +149,13 @@ async function pollDMs(seenIds = new Set()) {
 }
 
 /**
- * Send a reply DM back to a conversation.
+ * Send a reply DM. Also routed through the chat proxy.
  */
 async function replyDM(convoId, text) {
   await ensureSession();
+  const chat = chatAgent();
   try {
-    await agent.api.chat.bsky.convo.sendMessage({
+    await chat.api.chat.bsky.convo.sendMessage({
       convoId,
       message: { $type: 'chat.bsky.convo.defs#messageInput', text: text.slice(0, 1000) },
     });
@@ -154,9 +164,6 @@ async function replyDM(convoId, text) {
   }
 }
 
-/**
- * Resolve a DID to a handle so we can check if the sender is an admin.
- */
 async function resolveHandle(did) {
   try {
     const { data } = await agent.getProfile({ actor: did });
