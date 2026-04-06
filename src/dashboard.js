@@ -49,6 +49,27 @@ function startDashboard(state, postNowCallback) {
     res.json({ history: state.spotlightHistory ?? [] });
   });
 
+  // ── Tags ──────────────────────────────────────────────────────────────────────
+  app.get('/api/tags', requireAuth, (req, res) => {
+    res.json({ tags: state.customTags ?? [] });
+  });
+
+  app.post('/api/tags', requireAuth, (req, res) => {
+    const { tags } = req.body;
+    if (!Array.isArray(tags)) return res.status(400).json({ error: 'tags must be an array' });
+
+    // Normalise: ensure each tag starts with #, strip empties
+    state.customTags = tags
+      .map(t => t.trim())
+      .filter(Boolean)
+      .map(t => t.startsWith('#') ? t : `#${t}`)
+      .slice(0, 20); // reasonable cap
+
+    stateIO.save(state);
+    logger.info(`Dashboard: tags updated — ${state.customTags.join(' ')}`);
+    res.json({ ok: true, tags: state.customTags });
+  });
+
   // ── Templates ─────────────────────────────────────────────────────────────────
   app.get('/api/templates', requireAuth, (req, res) => {
     res.json({ templates: state.templates });
