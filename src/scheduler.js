@@ -1,15 +1,12 @@
 /**
  * scheduler.js – posting scheduler
  *
- * Runs on a cron job (every hour by default).
- * Each cycle it:
- *   1. Processes any queued highlights first
- *   2. Fetches recent images from Chevereto
- *   3. Picks N photos using recency-weighted random sampling
- *   4. Downloads each, uploads to Bluesky, and posts
+ * Runs hourly. Each cycle:
+ *   1. Drains one highlight from the queue (album or spotlight)
+ *   2. Posts a recency-weighted batch of regular photos
  *
- * Staggered posting: to avoid spamming followers with 4 posts
- * at once, images are posted with a 5-minute gap between each.
+ * Manual "post now" uses a short stagger (30 s) so you see all
+ * photos post quickly. Scheduled posts use 5-minute stagger.
  */
 
 const cron      = require('node-cron');
@@ -18,21 +15,44 @@ const bsky      = require('./bluesky');
 const stateIO   = require('./state');
 const logger    = require('./logger');
 
-const POSTS_PER_HOUR = parseInt(process.env.POSTS_PER_HOUR || '4', 10);
-const STAGGER_MS     = 5 * 60 * 1000; // 5 minutes between posts
+const POSTS_PER_HOUR   = parseInt(process.env.POSTS_PER_HOUR || '4', 10);
+const STAGGER_SCHED_MS = 5 * 60 * 1000;   // 5 min between scheduled posts
+const STAGGER_MANUAL_MS = 30 * 1000;       // 30 s between manual "post now" posts
+
+// ─── Template renderer ────────────────────────────────────────────────────────
+
+function renderTemplate(tpl, vars) {
+  return tpl.replace(/\{(\w+)\}/g, (_, key) => vars[key] ?? '').trim();
+}
+
+function buildPostText(image, extraText, templates) {
+  const tpl  = templates?.regularPost || '📸 {username}\n{title}\n{tags}';
+  const tags = (image.tags ?? []).slice(0, 3).map(t => `#${t.tag_url ?? t.tag}`);
+  if (!tags.includes('#photography')) tags.unshift('#photography');
+
+  let text = renderTemplate(tpl, {
+    username: image.user?.username ? `@${image.user.username}` : '',
+    title:    image.title || 'Untitled',
+    tags:     tags.join(' '),
+    url:      image.url_viewer || '',
+  });
+
+  if (extraText) text += `\n${extraText}`;
+  if (text.length > 280) text = text.slice(0, 277) + '…';
+  return text;
+}
 
 // ─── Public API ───────────────────────────────────────────────────────────────
 
 function startScheduler(state) {
-  // Post at :00 of every hour
-  cron.schedule('0 * * * *', () => runCycle(state));
-  logger.info(`Scheduler active – ${POSTS_PER_HOUR} posts/hour, staggered every 5 min`);
-  return () => runCycle(state); // return trigger for manual !post now
+  cron.schedule('0 * * * *', () => runCycle(state, false));
+  logger.info(`Scheduler active – ${POSTS_PER_HOUR} posts/hour`);
+  return (manual = true) => runCycle(state, manual);
 }
 
 // ─── Main cycle ───────────────────────────────────────────────────────────────
 
-async function runCycle(state) {
+async function runCycle(state, manual = false) {
   if (!state.running) {
     logger.info('Scheduler: bot paused, skipping cycle');
     return;
@@ -41,16 +61,16 @@ async function runCycle(state) {
   state.stats.lastCheckAt = new Date().toISOString();
   stateIO.save(state);
 
+  const staggerMs = manual ? STAGGER_MANUAL_MS : STAGGER_SCHED_MS;
+
   try {
-    // 1. Drain highlight queue first (albums & spotlights)
     if (state.highlights.length > 0) {
       const highlight = state.highlights.shift();
-      await postHighlight(highlight, state);
+      await postHighlight(highlight, state, staggerMs);
       stateIO.save(state);
     }
 
-    // 2. Regular photo batch
-    await postBatch(state);
+    await postBatch(state, staggerMs);
 
   } catch (err) {
     logger.error(`Cycle error: ${err.message}`);
@@ -59,49 +79,48 @@ async function runCycle(state) {
 
 // ─── Highlight posts ──────────────────────────────────────────────────────────
 
-async function postHighlight(highlight, state) {
-  if (highlight.type === 'album') {
-    await postAlbumHighlight(highlight, state);
-  } else if (highlight.type === 'spotlight') {
-    await postMemberSpotlight(highlight, state);
-  }
+async function postHighlight(highlight, state, staggerMs) {
+  if (highlight.type === 'album')     return postAlbumHighlight(highlight, state);
+  if (highlight.type === 'spotlight') return postMemberSpotlight(highlight, state, staggerMs);
 }
 
 async function postAlbumHighlight(highlight, state) {
   logger.info(`Posting album highlight: ${highlight.title}`);
+  const tpl  = state.templates?.albumHighlight || '📂 New Album: {title}\n#photography';
+  const text = renderTemplate(tpl, { title: highlight.title });
 
-  const announcementText = [
-    `📂 New Album Drop: ${highlight.title}`,
-    `Check out this fresh collection from our team!`,
-    `#photography #photooftheday`,
-  ].join('\n');
-
-  if (highlight.coverImage) {
-    const { buffer, mimeType } = await chevereto.downloadImage(highlight.coverImage);
-    const blob = await bsky.uploadBlob(buffer, mimeType);
-    await bsky.postPhoto(highlight.coverImage, blob, `📂 Album: ${highlight.title}`);
-  } else {
-    await bsky.postText(announcementText);
+  try {
+    if (highlight.coverImage) {
+      const { buffer, mimeType } = await chevereto.downloadImage(highlight.coverImage);
+      const blob = await bsky.uploadBlob(buffer, mimeType);
+      await bsky.postPhoto(highlight.coverImage, blob, text, true);
+    } else {
+      await bsky.postText(text);
+    }
+    state.stats.totalPosted++;
+    state.stats.lastPostedAt = new Date().toISOString();
+  } catch (err) {
+    logger.error(`Album highlight post failed: ${err.message}`);
   }
-
-  state.stats.totalPosted++;
-  state.stats.lastPostedAt = new Date().toISOString();
 }
 
-async function postMemberSpotlight(highlight, state) {
+async function postMemberSpotlight(highlight, state, staggerMs) {
   logger.info(`Posting member spotlight: ${highlight.name}`);
 
-  const intro = [
-    `🌟 Meet the photographer: ${highlight.name}`,
-    `Here's a look at some of their recent work:`,
-    `#photography #photographer #teamspotlight`,
-  ].join('\n');
+  const tpl  = state.templates?.memberSpotlight || '🌟 Spotlight: {name}\n#photography';
+  const intro = renderTemplate(tpl, { name: highlight.name, username: highlight.username });
 
   await bsky.postText(intro);
 
-  // Post up to 3 of their photos, staggered
-  for (const img of highlight.images.slice(0, 3)) {
-    await sleep(STAGGER_MS);
+  const images = highlight.images ?? [];
+  if (images.length === 0) {
+    logger.warn(`Spotlight for @${highlight.username} has no images — fetching now`);
+    const fetched = await chevereto.fetchUserImages(highlight.username);
+    images.push(...fetched.slice(0, 3));
+  }
+
+  for (const img of images.slice(0, 3)) {
+    await sleep(staggerMs);
     try {
       const { buffer, mimeType } = await chevereto.downloadImage(img);
       const blob = await bsky.uploadBlob(buffer, mimeType);
@@ -113,11 +132,24 @@ async function postMemberSpotlight(highlight, state) {
       logger.warn(`Spotlight image post failed: ${err.message}`);
     }
   }
+
+  // Record in spotlight history
+  const historyEntry = {
+    username:    highlight.username,
+    name:        highlight.name,
+    featuredAt:  new Date().toISOString(),
+  };
+  state.spotlightHistory = state.spotlightHistory ?? [];
+  // Remove previous entry for same user so we always have the latest date
+  state.spotlightHistory = state.spotlightHistory.filter(h => h.username !== highlight.username);
+  state.spotlightHistory.unshift(historyEntry);
+  // Keep last 50
+  if (state.spotlightHistory.length > 50) state.spotlightHistory = state.spotlightHistory.slice(0, 50);
 }
 
 // ─── Regular batch ────────────────────────────────────────────────────────────
 
-async function postBatch(state) {
+async function postBatch(state, staggerMs) {
   logger.info('Fetching recent images from Chevereto…');
   const allImages = await chevereto.fetchRecentImages(5);
   logger.info(`Fetched ${allImages.length} images`);
@@ -132,12 +164,30 @@ async function postBatch(state) {
 
   for (let i = 0; i < picks.length; i++) {
     const img = picks[i];
-    if (i > 0) await sleep(STAGGER_MS);
+    if (i > 0) await sleep(staggerMs);
 
     try {
       const { buffer, mimeType } = await chevereto.downloadImage(img);
       const blob = await bsky.uploadBlob(buffer, mimeType);
-      await bsky.postPhoto(img, blob);
+
+      // Build post text using template
+      const postText = buildPostText(img, '', state.templates);
+      const postUri  = await bsky.postPhotoWithText(img, blob, postText);
+
+      // Check for VRCX metadata and post a reply if found
+      if (postUri) {
+        const vrcx = await chevereto.extractVRCXMetadata(buffer);
+        if (vrcx) {
+          const vrcxTpl  = state.templates?.vrcxReply || '🌍 World: {worldName}\n✍️ Author: {worldAuthor}';
+          const vrcxText = renderTemplate(vrcxTpl, {
+            worldName:   vrcx.worldName  || 'Unknown World',
+            worldAuthor: vrcx.worldAuthor || 'Unknown',
+            instanceId:  vrcx.instanceId  || '',
+          });
+          await bsky.replyToPost(postUri, vrcxText);
+          logger.info(`VRCX reply posted for ${img.id}: ${vrcx.worldName}`);
+        }
+      }
 
       const imgId = img.id_encoded ?? img.id;
       state.postedIds.push(imgId);
