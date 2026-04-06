@@ -48,6 +48,12 @@ function startDashboard(state, postNowCallback) {
     });
   });
 
+  // ── Auth check ──────────────────────────────────────────────────────────────
+  // Dashboard calls this first to confirm the secret is correct.
+  app.post('/api/verify', requireAuth, (req, res) => {
+    res.json({ ok: true });
+  });
+
   // ── Start / Stop ────────────────────────────────────────────────────────────
   app.post('/api/start', requireAuth, (req, res) => {
     state.running = true;
