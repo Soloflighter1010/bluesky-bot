@@ -21,7 +21,7 @@ const DEFAULT_STATE = {
     regularPost:     '📸 {username}\n{title}\n{tags}',
     albumHighlight:  '📂 New Album: {title}\nFresh collection from our team!\n#photography #photooftheday',
     memberSpotlight: '🌟 Photographer Spotlight: {name}\nCheck out their recent work below!\n#photography #teamspotlight',
-    vrcxReply:       '🌍 World: {worldName}\n✍️ Author: {worldAuthor}\n📍 {instanceId}',
+    vrcxReply:       '🌍 World: {worldName}\n🔗 {worldUrl}{photographers}',
   },
 };
 
