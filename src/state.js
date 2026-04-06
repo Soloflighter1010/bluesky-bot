@@ -11,7 +11,8 @@ const DEFAULT_STATE = {
   running: true,
   postedIds: [],
   highlights: [],
-  spotlightHistory: [],   // [{ username, name, featuredAt }]
+  spotlightHistory: [],
+  customTags: ['#photography', '#VRChat'],  // shown on every regular post
   stats: {
     totalPosted: 0,
     lastPostedAt: null,
@@ -34,8 +35,9 @@ function load() {
       return {
         ...DEFAULT_STATE,
         ...saved,
-        templates: { ...DEFAULT_STATE.templates, ...(saved.templates || {}) },
-        stats:     { ...DEFAULT_STATE.stats,     ...(saved.stats     || {}) },
+        customTags: saved.customTags ?? DEFAULT_STATE.customTags,
+        templates:  { ...DEFAULT_STATE.templates, ...(saved.templates || {}) },
+        stats:      { ...DEFAULT_STATE.stats,     ...(saved.stats     || {}) },
       };
     }
   } catch (e) { /* ignore, start fresh */ }
