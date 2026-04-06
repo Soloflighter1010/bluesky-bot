@@ -54,18 +54,24 @@ async function uploadBlob(buffer, mimeType) {
 // ─── Posting ──────────────────────────────────────────────────────────────────
 
 /**
- * Post a photo with pre-built text. Returns the { uri, cid } of the new post
- * so callers can thread replies onto it.
+ * Post up to 4 images in a single Bluesky post.
+ * `entries` is an array of { image, blob } — max 4 (Bluesky limit).
+ * Returns { uri, cid } of the created post.
  */
-async function postPhotoWithText(image, blob, text) {
+async function postPhotosWithText(entries, text) {
   await ensureSession();
 
   const rt = new RichText({ text });
   await rt.detectFacets(agent);
 
+  const embedImages = entries.slice(0, 4).map(({ image, blob }) => ({
+    image,
+    alt: (image.title || 'Untitled').slice(0, 300),
+  }));
+
   const embed = {
     $type:  'app.bsky.embed.images',
-    images: [{ image: blob, alt: (image.title || 'Untitled').slice(0, 300) }],
+    images: embedImages,
   };
 
   const res = await agent.post({
@@ -75,8 +81,16 @@ async function postPhotoWithText(image, blob, text) {
     createdAt: new Date().toISOString(),
   });
 
-  logger.info(`Posted: "${image.title}" by ${image.user?.username ?? 'unknown'}`);
+  const titles = entries.map(e => `"${e.image.title}"`).join(', ');
+  logger.info(`Posted ${entries.length} images: ${titles}`);
   return res; // { uri, cid }
+}
+
+/**
+ * Single-image post — kept for spotlight/album highlight paths.
+ */
+async function postPhotoWithText(image, blob, text) {
+  return postPhotosWithText([{ image, blob }], text);
 }
 
 /**
@@ -189,6 +203,6 @@ async function resolveHandle(did) {
 }
 
 module.exports = {
-  login, postPhoto, postPhotoWithText, postText,
+  login, postPhoto, postPhotoWithText, postPhotosWithText, postText,
   replyToPost, uploadBlob, pollDMs, replyDM, resolveHandle,
 };
