@@ -452,79 +452,91 @@ function parsePNGTextChunks(buf) {
  * VRCX embeds a JSON blob in the PNG "Description" tEXt chunk:
  * {
  *   "application": "VRChat",
- *   "world": { "name": "...", "id": "wrld_...", "instanceId": "..." },
+ *   "world": { "name": "...", "id": "wrld_...", "instanceId": "wrld_...:12345~..." },
  *   "author": { "displayName": "..." },
- *   "players": [...]
+ *   "players": [{ "displayName": "..." }, ...]
  * }
  *
- * Older screenshots may use plain-text format: "WorldName by AuthorName"
- *
  * Returns null if no VRChat metadata found.
+ * Returns { worldName, worldAuthor, worldId, worldUrl, players[] } if found.
  */
 async function extractVRCXMetadata(buffer) {
   try {
-    // ── Try PNG tEXt chunks first (VRCX primary storage) ────────────────────
+    // ── Try PNG tEXt / iTXt chunks (VRCX primary storage) ───────────────────
     const textChunks = parsePNGTextChunks(buffer);
-    logger.info(`VRCX: PNG tEXt chunks found: ${Object.keys(textChunks).join(', ') || 'none'}`);
+    logger.info(`VRCX: PNG text chunks: [${Object.keys(textChunks).join(', ') || 'none'}]`);
 
     for (const [key, value] of Object.entries(textChunks)) {
-      // Look for any chunk that contains VRChat JSON
       if (!value) continue;
       const lower = value.toLowerCase();
-      if (lower.includes('vrchat') || lower.includes('wrld_')) {
-        // Try JSON parse first
-        try {
-          const json = JSON.parse(value);
-          if (json.world?.name) {
-            logger.info(`VRCX: found metadata in PNG chunk "${key}": ${json.world.name}`);
-            return {
-              worldName:   json.world.name,
-              worldAuthor: json.author?.displayName ?? null,
-              instanceId:  json.world.instanceId ?? null,
-              players:     (json.players ?? []).map(p => p.displayName).filter(Boolean),
-            };
-          }
-        } catch {}
+      if (!lower.includes('vrchat') && !lower.includes('wrld_')) continue;
 
-        // Try plain-text pattern: "WorldName by AuthorName"
-        const worldMatch  = value.match(/World[:\s]+([^\n\r]+)/i);
-        const authorMatch = value.match(/(?:by|Author)[:\s]+([^\n\r(]+)/i);
-        const instanceMatch = value.match(/wrld_[a-zA-Z0-9_]+:[0-9]+[^\s]*/);
-        if (worldMatch) {
-          logger.info(`VRCX: found plain-text metadata in chunk "${key}"`);
+      // ── JSON format (VRCX standard) ─────────────────────────────────────────
+      try {
+        const json = JSON.parse(value);
+        if (json.world?.name) {
+          // world.id = "wrld_XXXX" (clean), world.instanceId = full instance string
+          const worldId  = json.world.id ?? null;
+          const worldUrl = worldId
+            ? `https://vrchat.com/home/world/${worldId}`
+            : null;
+
+          logger.info(`VRCX: JSON metadata in chunk "${key}": ${json.world.name} (${worldId})`);
           return {
-            worldName:   worldMatch[1].trim().replace(/ by .*$/, ''),
-            worldAuthor: authorMatch ? authorMatch[1].trim() : null,
-            instanceId:  instanceMatch ? instanceMatch[0] : null,
-            players:     [],
+            worldName:   json.world.name,
+            worldAuthor: json.author?.displayName ?? null,
+            worldId,
+            worldUrl,
+            players: (json.players ?? []).map(p => p.displayName).filter(Boolean),
           };
         }
+      } catch { /* not JSON, try plain-text below */ }
+
+      // ── Plain-text format (older VRChat screenshots) ─────────────────────────
+      const worldMatch   = value.match(/World[:\s]+([^\n\r]+)/i);
+      const authorMatch  = value.match(/(?:by|Author)[:\s]+([^\n\r(]+)/i);
+      // Extract the clean wrld_ ID (stop at colon or whitespace)
+      const worldIdMatch = value.match(/wrld_([a-zA-Z0-9_-]+)/);
+
+      if (worldMatch) {
+        const worldId  = worldIdMatch ? `wrld_${worldIdMatch[1]}` : null;
+        const worldUrl = worldId ? `https://vrchat.com/home/world/${worldId}` : null;
+        logger.info(`VRCX: plain-text metadata in chunk "${key}"`);
+        return {
+          worldName:   worldMatch[1].trim().replace(/ by .*$/, ''),
+          worldAuthor: authorMatch ? authorMatch[1].trim() : null,
+          worldId,
+          worldUrl,
+          players: [],
+        };
       }
     }
 
-    // ── Fallback: scan raw EXIF UserComment ──────────────────────────────────
+    // ── Fallback: scan raw EXIF for embedded JSON ────────────────────────────
     const meta = await sharp(buffer).metadata();
     if (meta.exif) {
-      // UserComment is a known EXIF tag; search for VRChat JSON in raw bytes
-      const exifStr = meta.exif.toString('utf8');
-      const jsonMatch = exifStr.match(/\{[\s\S]*"application"\s*:\s*"VRChat"[\s\S]*\}/);
+      const exifStr    = meta.exif.toString('utf8');
+      const jsonMatch  = exifStr.match(/\{[\s\S]*?"application"\s*:\s*"VRChat"[\s\S]*?\}/);
       if (jsonMatch) {
         try {
           const json = JSON.parse(jsonMatch[0]);
           if (json.world?.name) {
-            logger.info(`VRCX: found metadata in EXIF: ${json.world.name}`);
+            const worldId  = json.world.id ?? null;
+            const worldUrl = worldId ? `https://vrchat.com/home/world/${worldId}` : null;
+            logger.info(`VRCX: metadata in EXIF: ${json.world.name}`);
             return {
               worldName:   json.world.name,
               worldAuthor: json.author?.displayName ?? null,
-              instanceId:  json.world.instanceId ?? null,
-              players:     (json.players ?? []).map(p => p.displayName).filter(Boolean),
+              worldId,
+              worldUrl,
+              players: (json.players ?? []).map(p => p.displayName).filter(Boolean),
             };
           }
         } catch {}
       }
     }
 
-    logger.info(`VRCX: no VRChat metadata found in this image`);
+    logger.info('VRCX: no VRChat metadata found in this image');
     return null;
 
   } catch (err) {
