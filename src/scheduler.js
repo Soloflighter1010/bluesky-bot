@@ -21,16 +21,35 @@ function renderTemplate(tpl, vars) {
   return tpl.replace(/\{(\w+)\}/g, (_, key) => vars[key] ?? '').trim();
 }
 
-function buildPostText(image, templates) {
+// VRChat raw screenshot filename pattern — strip these rather than show them as titles
+const VRC_FILENAME_RE = /^VRChat_\d{4}-\d{2}-\d{2}_[\d-]+\.\d+_\d+x\d+\.png$/i;
+
+function cleanTitle(title) {
+  if (!title || VRC_FILENAME_RE.test(title.trim())) return '';
+  return title;
+}
+
+function buildPostText(images, templates) {
+  // For a multi-image post, mention all unique uploaders
+  const usernames = [...new Set(
+    images.map(img => img.user?.username).filter(Boolean)
+  )].map(u => `@${u}`).join(' ');
+
+  // Collect titles, skipping raw VRChat filenames
+  const titles = images
+    .map(img => cleanTitle(img.title))
+    .filter(Boolean)
+    .slice(0, 2) // don't bloat the post with 4 separate titles
+    .join(' · ');
+
   const tpl  = templates?.regularPost || '📸 {username}\n{title}\n{tags}';
-  const tags = (image.tags ?? []).slice(0, 3).map(t => `#${t.tag_url ?? t.tag}`);
-  if (!tags.includes('#photography')) tags.unshift('#photography');
+  const tags = ['#photography', '#VRChat'].join(' ');
 
   let text = renderTemplate(tpl, {
-    username: image.user?.username ? `@${image.user.username}` : '',
-    title:    image.title || 'Untitled',
-    tags:     tags.join(' '),
-    url:      image.url_viewer || '',
+    username: usernames,
+    title:    titles,
+    tags,
+    url:      images[0]?.url_viewer || '',
   });
 
   if (text.length > 280) text = text.slice(0, 277) + '…';
@@ -158,68 +177,112 @@ async function postBatch(state, staggerMs) {
   }
 
   const picks = chevereto.weightedSample(allImages, POSTS_PER_HOUR, state.postedIds);
-  logger.info(`postBatch: ${picks.length} images selected to post`);
+  logger.info(`postBatch: ${picks.length} images selected: ${picks.map(p => p.id).join(', ')}`);
 
   if (picks.length === 0) {
-    logger.warn('postBatch: 0 images selected — all may already be in postedIds or pool empty');
+    logger.warn('postBatch: 0 images selected — pool exhausted or all already posted');
     return;
   }
 
-  for (let i = 0; i < picks.length; i++) {
-    const img = picks[i];
-    if (i > 0) {
-      logger.info(`postBatch: waiting ${staggerMs / 1000}s before next post…`);
-      await sleep(staggerMs);
-    }
-
-    logger.info(`postBatch: posting image ${i + 1}/${picks.length} id=${img.id} title="${img.title}"`);
-
+  // ── Download all picked images concurrently ────────────────────────────────
+  logger.info(`postBatch: downloading ${picks.length} images…`);
+  const downloaded = [];
+  for (const img of picks) {
     try {
-      // ── Download thumbnail for posting ─────────────────────────────────────
-      const { buffer: thumbBuf, mimeType } = await chevereto.downloadImage(img);
-      const blob = await bsky.uploadBlob(thumbBuf, mimeType);
-      const text = buildPostText(img, state.templates);
-      const postRef = await bsky.postPhotoWithText(img, blob, text);
-
-      // ── VRCX: download original for metadata (thumbnails strip metadata) ───
-      if (postRef) {
-        logger.info(`postBatch: checking image ${img.id} for VRCX metadata`);
-        try {
-          // Try the full-size URL for metadata — it must be a PNG to have tEXt chunks
-          const { buffer: origBuf } = await chevereto.downloadOriginal(img);
-          const vrcx = await chevereto.extractVRCXMetadata(origBuf);
-
-          if (vrcx) {
-            logger.info(`postBatch: VRCX found! World="${vrcx.worldName}" Author="${vrcx.worldAuthor}"`);
-            const vrcxTpl  = state.templates?.vrcxReply || '🌍 World: {worldName}\n✍️ Author: {worldAuthor}\n📍 {instanceId}';
-            const vrcxText = renderTemplate(vrcxTpl, {
-              worldName:   vrcx.worldName  || 'Unknown World',
-              worldAuthor: vrcx.worldAuthor || 'Unknown',
-              instanceId:  vrcx.instanceId  || '',
-              players:     (vrcx.players ?? []).join(', '),
-            });
-            await bsky.replyToPost(postRef, vrcxText);
-            logger.info(`postBatch: VRCX reply posted for ${img.id}`);
-          } else {
-            logger.info(`postBatch: no VRCX metadata in image ${img.id}`);
-          }
-        } catch (vrcxErr) {
-          logger.warn(`postBatch: VRCX check failed for ${img.id}: ${vrcxErr.message}`);
-        }
-      }
-
-      const imgId = img.id_encoded ?? img.id;
-      state.postedIds.push(imgId);
-      state.stats.totalPosted++;
-      state.stats.lastPostedAt = new Date().toISOString();
-      stateIO.save(state);
-
+      const { buffer, mimeType } = await chevereto.downloadImage(img);
+      const blob = await bsky.uploadBlob(buffer, mimeType);
+      downloaded.push({ image: img, blob, buffer });
+      logger.info(`postBatch: downloaded & uploaded ${img.id}`);
     } catch (err) {
-      logger.error(`postBatch: failed to post image ${img.id}: ${err.message}`);
+      logger.error(`postBatch: download/upload failed for ${img.id}: ${err.message}`);
     }
   }
 
-  logger.info(`postBatch: cycle complete — ${picks.length} posts attempted`);
+  if (downloaded.length === 0) {
+    logger.warn('postBatch: all downloads failed, nothing to post');
+    return;
+  }
+
+  // ── Post all images in a single Bluesky post ───────────────────────────────
+  const text     = buildPostText(downloaded.map(d => d.image), state.templates);
+  const entries  = downloaded.map(d => ({ image: d.image, blob: d.blob }));
+  let   postRef  = null;
+
+  try {
+    postRef = await bsky.postPhotosWithText(entries, text);
+    logger.info(`postBatch: posted ${downloaded.length} images in one post`);
+  } catch (err) {
+    logger.error(`postBatch: failed to post: ${err.message}`);
+    return;
+  }
+
+  // Mark all as posted regardless of VRCX outcome
+  for (const { image } of downloaded) {
+    state.postedIds.push(image.id_encoded ?? image.id);
+    state.stats.totalPosted++;
+  }
+  state.stats.lastPostedAt = new Date().toISOString();
+  stateIO.save(state);
+
+  // ── VRCX: check each image for VRChat metadata, reply once per world found ─
+  if (postRef) {
+    const vrcxResults = [];
+
+    for (const { image, buffer } of downloaded) {
+      logger.info(`postBatch: checking image ${image.id} for VRCX metadata`);
+      try {
+        // Must use full-size original — thumbnails have EXIF/tEXt stripped
+        const { buffer: origBuf } = await chevereto.downloadOriginal(image);
+        const vrcx = await chevereto.extractVRCXMetadata(origBuf);
+        if (vrcx) {
+          vrcxResults.push(vrcx);
+          logger.info(`postBatch: VRCX found in ${image.id}: ${vrcx.worldName}`);
+        } else {
+          logger.info(`postBatch: no VRCX metadata in ${image.id}`);
+        }
+      } catch (vrcxErr) {
+        logger.warn(`postBatch: VRCX check error for ${image.id}: ${vrcxErr.message}`);
+      }
+    }
+
+    // Collect unique photographers from this batch for the VRCX reply
+    const photographers = [...new Set(
+      downloaded.map(d => d.image.user?.username).filter(Boolean)
+    )];
+
+    // Deduplicate by worldId and post one reply per unique world
+    const seenWorlds = new Set();
+    for (const vrcx of vrcxResults) {
+      const key = vrcx.worldId || vrcx.worldName;
+      if (seenWorlds.has(key)) continue;
+      seenWorlds.add(key);
+
+      const vrcxTpl = state.templates?.vrcxReply ||
+        '🌍 World: {worldName}\n🔗 {worldUrl}{photographers}';
+
+      // Only surface photographer list when the batch has multiple uploaders
+      const photographerLine = photographers.length > 1
+        ? '\n📸 ' + photographers.map(u => `@${u}`).join(' ')
+        : '';
+
+      const vrcxText = renderTemplate(vrcxTpl, {
+        worldName:    vrcx.worldName || 'Unknown World',
+        worldId:      vrcx.worldId   || '',
+        worldUrl:     vrcx.worldUrl  || '',
+        players:      (vrcx.players ?? []).join(', '),
+        photographers: photographerLine,
+      });
+
+      try {
+        await bsky.replyToPost(postRef, vrcxText);
+        logger.info(`postBatch: VRCX reply posted for world "${vrcx.worldName}"`);
+      } catch (replyErr) {
+        logger.warn(`postBatch: VRCX reply failed: ${replyErr.message}`);
+      }
+    }
+  }
+
+  logger.info(`postBatch: cycle complete — ${downloaded.length} images posted`);
 }
 
 function sleep(ms) {
