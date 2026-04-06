@@ -22,7 +22,7 @@ const stateIO   = require('./state');
 const logger    = require('./logger');
 
 const PORT   = parseInt(process.env.DASHBOARD_PORT || '3000', 10);
-const SECRET = process.env.DASHBOARD_SECRET || 'change_me';
+const SECRET = (process.env.DASHBOARD_SECRET || 'change_me').trim();
 
 function startDashboard(state, postNowCallback) {
   const app = express();
@@ -31,7 +31,9 @@ function startDashboard(state, postNowCallback) {
 
   // Auth middleware for mutating routes
   function requireAuth(req, res, next) {
-    if (req.headers['x-dashboard-secret'] === SECRET) return next();
+    const incoming = (req.headers['x-dashboard-secret'] || '').trim();
+    if (incoming === SECRET) return next();
+    logger.warn(`Dashboard: rejected request with wrong secret (length ${incoming.length} vs expected ${SECRET.length})`);
     res.status(401).json({ error: 'Unauthorized' });
   }
 
