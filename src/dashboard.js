@@ -49,6 +49,42 @@ function startDashboard(state, postNowCallback) {
     res.json({ history: state.spotlightHistory ?? [] });
   });
 
+  // ── User mappings ─────────────────────────────────────────────────────────────
+  // Maps Chevereto username → Bluesky handle for proper @mentions in posts
+
+  app.get('/api/user-mappings', requireAuth, (req, res) => {
+    res.json({ mappings: state.userMappings ?? {} });
+  });
+
+  app.post('/api/user-mappings', requireAuth, (req, res) => {
+    const { cheveretoUsername, bskyHandle } = req.body;
+    if (!cheveretoUsername || !bskyHandle) {
+      return res.status(400).json({ error: 'cheveretoUsername and bskyHandle required' });
+    }
+
+    const chev = cheveretoUsername.trim().replace(/^@/, '');
+    // Normalise Bluesky handle: strip leading @, ensure it has a dot (basic check)
+    const bsky = bskyHandle.trim().replace(/^@/, '');
+    if (!bsky.includes('.')) {
+      return res.status(400).json({ error: 'bskyHandle must be a full handle, e.g. user.bsky.social' });
+    }
+
+    state.userMappings = state.userMappings ?? {};
+    state.userMappings[chev] = bsky;
+    stateIO.save(state);
+    logger.info(`Dashboard: mapped @${chev} → @${bsky}`);
+    res.json({ ok: true, mappings: state.userMappings });
+  });
+
+  app.delete('/api/user-mappings/:username', requireAuth, (req, res) => {
+    const chev = req.params.username;
+    state.userMappings = state.userMappings ?? {};
+    delete state.userMappings[chev];
+    stateIO.save(state);
+    logger.info(`Dashboard: removed mapping for @${chev}`);
+    res.json({ ok: true, mappings: state.userMappings });
+  });
+
   // ── Tags ──────────────────────────────────────────────────────────────────────
   app.get('/api/tags', requireAuth, (req, res) => {
     res.json({ tags: state.customTags ?? [] });
