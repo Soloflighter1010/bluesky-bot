@@ -55,7 +55,8 @@ async function uploadBlob(buffer, mimeType) {
 
 /**
  * Post up to 4 images in a single Bluesky post.
- * `entries` is an array of { image, blob } — max 4 (Bluesky limit).
+ * entries: array of { image, blob, altText? }
+ * If altText is provided it overrides the default (image.title).
  * Returns { uri, cid } of the created post.
  */
 async function postPhotosWithText(entries, text) {
@@ -64,9 +65,9 @@ async function postPhotosWithText(entries, text) {
   const rt = new RichText({ text });
   await rt.detectFacets(agent);
 
-  const embedImages = entries.slice(0, 4).map(({ image, blob }) => ({
+  const embedImages = entries.slice(0, 4).map(({ image, blob, altText }) => ({
     image: blob,
-    alt: (image.title || 'Untitled').slice(0, 300),
+    alt:   (altText || image.title || 'Untitled').slice(0, 300),
   }));
 
   const embed = {
@@ -81,8 +82,7 @@ async function postPhotosWithText(entries, text) {
     createdAt: new Date().toISOString(),
   });
 
-  const titles = entries.map(e => `"${e.image.title}"`).join(', ');
-  logger.info(`Posted ${entries.length} images: ${titles}`);
+  logger.info(`Posted ${entries.length} images`);
   return res; // { uri, cid }
 }
 
