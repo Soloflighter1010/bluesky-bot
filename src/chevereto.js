@@ -149,10 +149,37 @@ function parsePage(html, pageUrl) {
       $card.attr('data-title') || 'Untitled';
 
     // ── Username ──────────────────────────────────────────────────────────────
+    // In Chevereto the username is most often on the card element itself as a
+    // data attribute. Try the card first, then look at children.
     const username =
-      $card.find('[data-username]').first().attr('data-username') ||
-      $card.find('.list-item-user a, .username, .user-link').first().text().trim().replace(/^@/, '') ||
-      $card.attr('data-username') || '';
+      $card.attr('data-username')                                                    ||
+      $card.attr('data-user')                                                        ||
+      $card.attr('data-uploader')                                                    ||
+      $card.find('[data-username]').first().attr('data-username')                    ||
+      $card.find('[data-user]').first().attr('data-user')                            ||
+      $card.find('.list-item-user a, .username, .user-link, .uploader').first().text().trim().replace(/^@/, '') ||
+      // Try any <a> whose href looks like a profile page (/word not /image/word)
+      (() => {
+        let found = '';
+        $card.find('a[href]').each((_, a) => {
+          const href = $(a).attr('href') || '';
+          // Profile links: /username (single path segment, not /image/hash)
+          const parts = href.split('/').filter(Boolean);
+          if (parts.length === 1 && !COMMON_SEGMENTS.has(parts[0].toLowerCase())) {
+            found = parts[0];
+            return false; // break
+          }
+        });
+        return found;
+      })() ||
+      '';
+
+    // Log first card's attributes on page 1 to help diagnose username issues
+    if (images.length === 0) {
+      const attrs = {};
+      if (card.attribs) Object.assign(attrs, card.attribs);
+      logger.info(`parsePage: first card attrs: ${JSON.stringify(attrs).slice(0, 300)}`);
+    }
 
     images.push({
       id,
