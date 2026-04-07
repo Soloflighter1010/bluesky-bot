@@ -29,10 +29,15 @@ function cleanTitle(title) {
   return title;
 }
 
-function buildPostText(images, templates, customTags = []) {
+function buildPostText(images, templates, customTags = [], userMappings = {}) {
+  // Resolve each Chevereto username to a Bluesky handle if a mapping exists,
+  // otherwise fall back to the raw Chevereto username.
   const usernames = [...new Set(
     images.map(img => img.user?.username).filter(Boolean)
-  )].map(u => `@${u}`).join(' ');
+  )].map(u => {
+    const mapped = userMappings[u];
+    return mapped ? `@${mapped}` : `@${u}`;
+  }).join(' ');
 
   const titles = images
     .map(img => cleanTitle(img.title))
@@ -235,12 +240,24 @@ async function postBatch(state, staggerMs) {
   });
 
   // ── Build post text ────────────────────────────────────────────────────────
-  let text = buildPostText(downloaded.map(d => d.image), state.templates, state.customTags ?? []);
+  let text = buildPostText(
+    downloaded.map(d => d.image),
+    state.templates,
+    state.customTags ?? [],
+    state.userMappings ?? {}
+  );
 
-  // If any image has VRCX data, add a brief note pointing to alt text
   if (anyVrcx) {
+    // Point viewers to alt text for world info
     const altNote = '🌍 World info in alt text';
     if ((text + '\n' + altNote).length <= 280) text += '\n' + altNote;
+  } else {
+    // No VRCX — link to the Chevereto viewer page for the first image
+    const viewerUrl = downloaded[0]?.image.url_viewer;
+    if (viewerUrl) {
+      const urlLine = `\n🔗 ${viewerUrl}`;
+      if ((text + urlLine).length <= 280) text += urlLine;
+    }
   }
 
   // ── Post ───────────────────────────────────────────────────────────────────
