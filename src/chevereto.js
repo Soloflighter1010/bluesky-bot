@@ -12,7 +12,7 @@ const sharp   = require('sharp');
 const logger  = require('./logger');
 
 const BASE_URL = process.env.CHEVERETO_BASE_URL?.replace(/\/$/, '');
-const BIAS     = parseFloat(process.env.RECENCY_BIAS || '3.0');
+const BIAS     = parseFloat(process.env.RECENCY_BIAS || '1.5');
 
 // ─── HTTP helpers ─────────────────────────────────────────────────────────────
 
@@ -204,7 +204,7 @@ function parsePage(html, pageUrl) {
 
 // ─── Fetch recent images ──────────────────────────────────────────────────────
 
-async function fetchRecentImages(maxPages = 5) {
+async function fetchRecentImages(maxPages = 20) {
   const all = [];
   const seenIds = new Set();
 
@@ -407,7 +407,58 @@ async function fetchUserImages(username) {
   return [];
 }
 
-// ─── Image download ───────────────────────────────────────────────────────────
+/**
+ * Fetch three representative images for a member spotlight:
+ *   1. Most recent upload  (sort=date_desc)
+ *   2. Most viewed image   (sort=views_desc)
+ *   3. Most liked image    (sort=likes_desc)
+ *
+ * Uses the per-user list URLs discovered from the live site:
+ *   /{username}/?list=images&sort=date_desc&page=1
+ *
+ * Deduplicates so the same image never fills two slots. If a slot
+ * returns nothing new, it's simply omitted — callers get 1-3 images.
+ */
+async function fetchUserSpotlightImages(username) {
+  const sorts = [
+    { label: 'most recent',  sort: 'date_desc'  },
+    { label: 'most viewed',  sort: 'views_desc'  },
+    { label: 'most liked',   sort: 'likes_desc'  },
+  ];
+
+  const picked  = [];
+  const seenIds = new Set();
+
+  for (const { label, sort } of sorts) {
+    const url = `${BASE_URL}/${username}/?list=images&sort=${sort}&page=1`;
+    try {
+      logger.info(`fetchUserSpotlightImages: ${label} — ${url}`);
+      const html = await fetchHTML(url);
+      const imgs = parsePage(html, url);
+
+      // Pick the first image we haven't already selected
+      const img = imgs.find(i => {
+        const id = i.id_encoded ?? i.id;
+        return !seenIds.has(id);
+      });
+
+      if (img) {
+        seenIds.add(img.id_encoded ?? img.id);
+        picked.push({ ...img, spotlightRole: label });
+        logger.info(`fetchUserSpotlightImages: picked ${img.id} as "${label}"`);
+      } else {
+        logger.info(`fetchUserSpotlightImages: no new image for "${label}" slot`);
+      }
+    } catch (err) {
+      logger.warn(`fetchUserSpotlightImages: ${url} — ${err.message}`);
+    }
+  }
+
+  logger.info(`fetchUserSpotlightImages: ${picked.length} images for @${username}`);
+  return picked;
+}
+
+
 
 async function downloadImage(image) {
   // Try full-size first, thumbnail as fallback
@@ -593,6 +644,7 @@ module.exports = {
   fetchAlbumImages,
   fetchUser,
   fetchUserImages,
+  fetchUserSpotlightImages,
   downloadImage,
   downloadOriginal,
   extractVRCXMetadata,
