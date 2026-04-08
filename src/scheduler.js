@@ -319,24 +319,38 @@ async function postBatch(state, staggerMs) {
   if (!postRef) return;
 
   // ── Reply 1: World Information ─────────────────────────────────────────────
-  // One line per image. Images WITH VRCX get world name + link.
-  // Images WITHOUT get a "no metadata" note.
-  const worldLines = ['🌍 World Information'];
-  for (let i = 0; i < downloaded.length; i++) {
-    const { image } = downloaded[i];
-    const vrcx      = vrcxByImageId[image.id];
-    const label     = `Image ${i + 1}`;
-    if (vrcx) {
-      worldLines.push(`${label} was taken in ${vrcx.worldName}`);
-      if (vrcx.worldUrl) worldLines.push(`Visit: ${vrcx.worldUrl}`);
-    } else {
-      worldLines.push(`${label} — no world information available`);
-    }
-  }
+  // Only post if at least one image has VRCX data.
+  // Group images that share the same world to avoid repeating the URL.
+  const anyVrcx = Object.keys(vrcxByImageId).length > 0;
+  let lastRef = postRef;
 
-  const worldText   = worldLines.join('\n');
-  const worldChunks = chunkText(worldText);
-  let   lastRef     = await sendChunkedReplies(postRef, postRef, worldChunks);
+  if (anyVrcx) {
+    // Build an ordered map: worldKey → { vrcx, imageNumbers[] }
+    const worldGroups = new Map();
+    for (let i = 0; i < downloaded.length; i++) {
+      const { image } = downloaded[i];
+      const vrcx      = vrcxByImageId[image.id];
+      if (!vrcx) continue;
+      const key = vrcx.worldId || vrcx.worldName;
+      if (!worldGroups.has(key)) worldGroups.set(key, { vrcx, nums: [] });
+      worldGroups.get(key).nums.push(i + 1);
+    }
+
+    const worldLines = ['🌍 World Information'];
+    for (const { vrcx, nums } of worldGroups.values()) {
+      const label = nums.length === 1
+        ? `Image ${nums[0]}`
+        : `Images ${nums.slice(0, -1).join(', ')} & ${nums[nums.length - 1]}`;
+      worldLines.push(`${label} — ${vrcx.worldName}`);
+      if (vrcx.worldUrl) worldLines.push(`Visit: ${vrcx.worldUrl}`);
+    }
+
+    const worldChunks = chunkText(worldLines.join('\n'));
+    lastRef = await sendChunkedReplies(postRef, postRef, worldChunks);
+    logger.info(`postBatch: world info reply posted (${worldGroups.size} unique world(s))`);
+  } else {
+    logger.info('postBatch: no VRCX data in any image — skipping world info reply');
+  }
 
   // ── Reply 2: Image Links ───────────────────────────────────────────────────
   // Viewer URL for every image in the batch, chained after the world info reply.
