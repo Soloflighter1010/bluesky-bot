@@ -1,0 +1,254 @@
+<!-- 
+  ═══════════════════════════════════════════════════════════════════════════════
+  ADD THIS SECTION TO dashboard/index.html
+  
+  Place it after the "Message Templates" section and before the "DM Commands" section
+  ═══════════════════════════════════════════════════════════════════════════════
+-->
+
+<!-- ── Crosspost Configuration ───────────────────────────────────────────────── -->
+<div class="section">
+  <div class="section-header">
+    <span class="section-title">🔄 Crosspost to X & Instagram (Buffer)</span>
+    <button onclick="testCrosspostConnection()" style="font-size:10px;padding:5px 10px">🔗 Test Connection</button>
+  </div>
+  <div class="section-body" style="display:flex;flex-direction:column;gap:16px">
+    <p style="color:var(--muted);font-size:13px">Automatically post to X & Instagram via Buffer after posting to Bluesky. Requires a Buffer API key configured in your <code style="font-family:var(--mono);color:var(--accent2)">.env</code> file.</p>
+
+    <!-- Status -->
+    <div style="background:var(--raised);border:1px solid var(--border);border-radius:6px;padding:12px;font-family:var(--mono);font-size:12px">
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px">
+        <span id="crosspost-status-dot" style="width:8px;height:8px;border-radius:50%;background:var(--muted)"></span>
+        <span id="crosspost-status-text">Checking…</span>
+      </div>
+      <div id="crosspost-profiles" style="color:var(--muted);font-size:11px;margin-top:6px"></div>
+    </div>
+
+    <!-- Toggle ──────────────────────────────────────────────────────────────── -->
+    <div style="display:flex;gap:10px;align-items:center">
+      <label style="font-family:var(--mono);font-size:11px;letter-spacing:.1em;text-transform:uppercase;color:var(--muted)">Global Enable</label>
+      <button id="crosspost-toggle-btn" onclick="toggleCrosspost(this)" style="width:60px;padding:6px 12px;border-radius:20px;border:1px solid var(--border);background:var(--raised);color:var(--text);cursor:pointer;transition:all .2s;font-family:var(--mono);font-size:11px">
+        ON
+      </button>
+      <span style="color:var(--muted);font-size:11px">Posts will be queued in Buffer</span>
+    </div>
+
+    <!-- X Configuration ──────────────────────────────────────────────────────── -->
+    <div style="border-top:1px solid var(--border);padding-top:12px">
+      <label style="font-family:var(--mono);font-size:11px;letter-spacing:.1em;text-transform:uppercase;color:var(--muted);display:block;margin-bottom:8px">𝕏 (Twitter) Settings</label>
+      <div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:8px">
+        <label style="display:flex;align-items:center;gap:6px;font-size:12px;cursor:pointer">
+          <input type="checkbox" id="x-enabled" onchange="updatePlatformConfig('x')" style="cursor:pointer" />
+          Enable X crossposting
+        </label>
+      </div>
+      <label style="font-family:var(--mono);font-size:10px;letter-spacing:.1em;text-transform:uppercase;color:var(--muted);display:block;margin-bottom:4px">Custom hashtags</label>
+      <textarea id="x-hashtags" rows="2" placeholder="#photography #VRChat" spellcheck="false" style="font-family:var(--mono);font-size:11px"></textarea>
+      <button onclick="savePlatformConfig('x')" style="margin-top:6px;font-size:10px;padding:5px 10px">Save X Settings</button>
+    </div>
+
+    <!-- Instagram Configuration ──────────────────────────────────────────────── -->
+    <div style="border-top:1px solid var(--border);padding-top:12px">
+      <label style="font-family:var(--mono);font-size:11px;letter-spacing:.1em;text-transform:uppercase;color:var(--muted);display:block;margin-bottom:8px">📷 Instagram Settings</label>
+      <div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:8px">
+        <label style="display:flex;align-items:center;gap:6px;font-size:12px;cursor:pointer">
+          <input type="checkbox" id="ig-enabled" onchange="updatePlatformConfig('instagram')" style="cursor:pointer" />
+          Enable Instagram crossposting
+        </label>
+      </div>
+      <label style="font-family:var(--mono);font-size:10px;letter-spacing:.1em;text-transform:uppercase;color:var(--muted);display:block;margin-bottom:4px">Custom hashtags</label>
+      <textarea id="ig-hashtags" rows="2" placeholder="#photography #VRChat #teamspotlight" spellcheck="false" style="font-family:var(--mono);font-size:11px"></textarea>
+      <button onclick="savePlatformConfig('instagram')" style="margin-top:6px;font-size:10px;padding:5px 10px">Save Instagram Settings</button>
+    </div>
+
+    <!-- Stats -->
+    <div style="border-top:1px solid var(--border);padding-top:12px;display:grid;grid-template-columns:1fr 1fr;gap:12px;font-size:12px">
+      <div style="background:var(--raised);border:1px solid var(--border);border-radius:4px;padding:10px">
+        <div style="font-family:var(--mono);font-size:10px;color:var(--muted);margin-bottom:4px">X Posts Queued</div>
+        <div style="font-family:var(--serif);font-size:20px;color:var(--accent2)" id="crosspost-x-count">—</div>
+      </div>
+      <div style="background:var(--raised);border:1px solid var(--border);border-radius:4px;padding:10px">
+        <div style="font-family:var(--mono);font-size:10px;color:var(--muted);margin-bottom:4px">Instagram Posts Queued</div>
+        <div style="font-family:var(--serif);font-size:20px;color:var(--accent2)" id="crosspost-ig-count">—</div>
+      </div>
+    </div>
+
+    <!-- Info -->
+    <div style="background:rgba(126,184,212,.1);border:1px solid rgba(126,184,212,.3);border-radius:4px;padding:10px;font-size:12px;color:var(--accent2)">
+      📖 For setup instructions, see <code style="font-family:var(--mono)">CROSSPOST_SETUP.md</code>
+    </div>
+  </div>
+</div>
+
+<!--
+  ═══════════════════════════════════════════════════════════════════════════════
+  ADD THESE JAVASCRIPT FUNCTIONS TO dashboard/index.html (in the <script> section)
+  
+  Place them after the existing function definitions (after saveTags, before the polling section)
+  ═══════════════════════════════════════════════════════════════════════════════
+-->
+
+<script>
+  // ── Crosspost functions ────────────────────────────────────────────────────
+  
+  async function loadCrosspostConfig() {
+    if (!SECRET) return;
+    try {
+      const data = await apiFetch('/api/crosspost/config');
+      if (!data) return;
+
+      // Update toggle button
+      const btn = document.getElementById('crosspost-toggle-btn');
+      btn.textContent = data.enabled ? 'ON' : 'OFF';
+      btn.style.background = data.enabled ? 'var(--success)' : 'var(--danger)';
+      btn.style.color = data.enabled ? '#fff' : 'var(--text)';
+
+      // Update platform checkboxes and textareas
+      const xConfig = data.platforms?.x || {};
+      const igConfig = data.platforms?.instagram || {};
+
+      document.getElementById('x-enabled').checked = xConfig.enabled !== false;
+      document.getElementById('ig-enabled').checked = igConfig.enabled !== false;
+      document.getElementById('x-hashtags').value = (xConfig.hashtags || []).join('\n');
+      document.getElementById('ig-hashtags').value = (igConfig.hashtags || []).join('\n');
+
+      // Update stats
+      document.getElementById('crosspost-x-count').textContent = data.stats?.xPosted ?? '—';
+      document.getElementById('crosspost-ig-count').textContent = data.stats?.instagramPosted ?? '—';
+
+      log('Crosspost config loaded', 'ok');
+    } catch (err) {
+      log('Failed to load crosspost config: ' + err.message, 'err');
+    }
+  }
+
+  async function toggleCrosspost(btn) {
+    if (!SECRET) { toast('Unlock dashboard first', 'err'); return; }
+    btn.disabled = true;
+    const currentText = btn.textContent;
+
+    try {
+      const isCurrentlyOn = currentText === 'ON';
+      const data = await apiFetch('/api/crosspost/toggle', 'POST', { enabled: !isCurrentlyOn });
+      if (data._httpStatus === 401 || data.error) {
+        toast('Failed to toggle', 'err');
+        return;
+      }
+      await loadCrosspostConfig();
+      log(`Crosspost ${!isCurrentlyOn ? 'enabled' : 'disabled'}`, 'ok');
+    } catch (err) {
+      toast('Error: ' + err.message, 'err');
+    } finally {
+      btn.disabled = false;
+    }
+  }
+
+  async function testCrosspostConnection() {
+    if (!SECRET) { toast('Unlock dashboard first', 'err'); return; }
+
+    const statusDot = document.getElementById('crosspost-status-dot');
+    const statusText = document.getElementById('crosspost-status-text');
+    const profilesDiv = document.getElementById('crosspost-profiles');
+
+    statusText.textContent = 'Testing…';
+    statusDot.style.background = 'var(--warn)';
+
+    try {
+      const data = await apiFetch('/api/crosspost/test');
+      if (data._httpStatus === 401) {
+        statusText.textContent = 'Not authenticated';
+        statusDot.style.background = 'var(--danger)';
+        return;
+      }
+      if (data.error) {
+        statusText.textContent = 'Error: ' + data.error;
+        statusDot.style.background = 'var(--danger)';
+        profilesDiv.textContent = '';
+        return;
+      }
+
+      const connected = data.connected;
+      statusDot.style.background = connected ? 'var(--success)' : 'var(--muted)';
+      statusText.textContent = connected ? 'Connected' : 'No profiles connected';
+
+      if (data.profiles && data.profiles.length > 0) {
+        profilesDiv.innerHTML = data.profiles
+          .map(p => `<div>✓ ${p.service === 'twitter' ? '𝕏' : '📷'} ${p.name || p.service}</div>`)
+          .join('');
+      } else {
+        profilesDiv.textContent = '⚠ No X or Instagram accounts connected to Buffer';
+      }
+
+      log('Crosspost test complete', connected ? 'ok' : 'warn');
+    } catch (err) {
+      statusText.textContent = 'Connection failed';
+      statusDot.style.background = 'var(--danger)';
+      profilesDiv.textContent = err.message;
+      toast('Test failed: ' + err.message, 'err');
+    }
+  }
+
+  function updatePlatformConfig(platform) {
+    // This just updates local checkboxes for live preview
+    // Actual save happens in savePlatformConfig()
+  }
+
+  async function savePlatformConfig(platform) {
+    if (!SECRET) { toast('Unlock dashboard first', 'err'); return; }
+
+    const enableCheckbox = document.getElementById(`${platform === 'x' ? 'x' : 'ig'}-enabled`);
+    const hashtagsTextarea = document.getElementById(`${platform === 'x' ? 'x' : 'ig'}-hashtags`);
+
+    const hashtags = hashtagsTextarea.value
+      .split('\n')
+      .map(h => h.trim())
+      .filter(Boolean);
+
+    const config = {
+      enabled: enableCheckbox.checked,
+      hashtags,
+    };
+
+    try {
+      const data = await apiFetch('/api/crosspost/platform-config', 'POST', {
+        platform,
+        config,
+      });
+
+      if (data._httpStatus === 401 || data.error) {
+        toast(data.error || 'Failed', 'err');
+        return;
+      }
+
+      toast('Settings saved ✓', 'ok');
+      log(`${platform === 'x' ? 'X' : 'Instagram'} settings saved`, 'ok');
+    } catch (err) {
+      toast('Error: ' + err.message, 'err');
+    }
+  }
+
+  // Update the loadAll() function to include crosspost config
+  // (Replace the existing loadAll function)
+  function loadAll() {
+    loadStatus();
+    loadQueue();
+    loadHistory();
+    loadMappings();
+    loadTags();
+    loadTemplates();
+    loadCrosspostConfig();  // ← ADD THIS LINE
+  }
+
+  // Update the startPolling function to refresh crosspost config
+  // (Replace the existing startPolling function)
+  function startPolling() {
+    if (pollInterval) clearInterval(pollInterval);
+    pollInterval = setInterval(() => {
+      loadStatus();
+      loadQueue();
+      loadCrosspostConfig();  // ← ADD THIS LINE
+    }, 10_000);
+  }
+</script>
+
+<!-- ═══════════════════════════════════════════════════════════════════════════════ -->
