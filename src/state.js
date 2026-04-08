@@ -12,7 +12,7 @@ const DEFAULT_STATE = {
   postedIds: [],
   highlights: [],
   spotlightHistory: [],
-  customTags: ['#photography', '#VRChat'],
+  customTags: ['#photography', '#VRChat'],  // shown on every regular post
   // Maps Chevereto username → Bluesky handle, e.g. { "alice": "alice.bsky.social" }
   userMappings: {},
   stats: {
