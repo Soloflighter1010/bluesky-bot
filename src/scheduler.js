@@ -124,39 +124,73 @@ async function postAlbumHighlight(highlight, state) {
 
 async function postMemberSpotlight(highlight, state, staggerMs) {
   logger.info(`Member spotlight: @${highlight.username}`);
-  const tpl   = state.templates?.memberSpotlight || '🌟 Spotlight: {name}\n#photography';
-  const intro = renderTemplate(tpl, { name: highlight.name, username: highlight.username });
 
-  await bsky.postText(intro);
-
-  // Images should already be attached when queued; re-fetch if missing
-  let images = highlight.images ?? [];
-  if (images.length === 0) {
-    logger.info(`Spotlight: no images pre-fetched for @${highlight.username}, fetching now`);
-    images = await chevereto.fetchUserImages(highlight.username);
-    logger.info(`Spotlight: fetched ${images.length} images for @${highlight.username}`);
-  }
+  // Re-fetch spotlight images at post time using the proper sort URLs.
+  // Images stored at queue time may be stale, and we now want the three
+  // specific slots (most recent / most viewed / most liked).
+  logger.info(`Spotlight: fetching representative images for @${highlight.username}`);
+  const images = await chevereto.fetchUserSpotlightImages(highlight.username);
+  logger.info(`Spotlight: got ${images.length} images for @${highlight.username}`);
 
   if (images.length === 0) {
-    logger.warn(`Spotlight: still no images found for @${highlight.username}, skipping photos`);
+    // Fall back to whatever was queued if the live fetch failed
+    const fallback = highlight.images ?? [];
+    if (fallback.length === 0) {
+      logger.warn(`Spotlight: no images for @${highlight.username}, posting text-only intro`);
+      await bsky.postText(
+        renderTemplate(
+          state.templates?.memberSpotlight || '🌟 Spotlight: {name}\n#photography',
+          { name: highlight.name, username: highlight.username }
+        )
+      );
+      recordSpotlightHistory(state, highlight);
+      return;
+    }
+    images.push(...fallback.slice(0, 3));
   }
 
-  for (const img of images.slice(0, 3)) {
-    await sleep(staggerMs);
+  // ── Download & upload all spotlight images ──────────────────────────────────
+  const entries = [];
+  for (const img of images) {
     try {
       const { buffer, mimeType } = await chevereto.downloadImage(img);
       const blob = await bsky.uploadBlob(buffer, mimeType);
-      await bsky.postPhoto(img, blob);
-      state.stats.totalPosted++;
-      state.stats.lastPostedAt = new Date().toISOString();
-      state.postedIds.push(img.id_encoded ?? img.id);
-      stateIO.save(state);
+      // Use the spotlight role as alt text so screen readers know what each image represents
+      const altText = img.spotlightRole ? `${img.spotlightRole} photo` : '';
+      entries.push({ image: img, blob, altText });
     } catch (err) {
-      logger.warn(`Spotlight image failed: ${err.message}`);
+      logger.warn(`Spotlight: download failed for ${img.id}: ${err.message}`);
     }
   }
 
-  // Record in spotlight history
+  if (entries.length === 0) {
+    logger.warn(`Spotlight: all downloads failed for @${highlight.username}`);
+    recordSpotlightHistory(state, highlight);
+    return;
+  }
+
+  // ── Build intro text ───────────────────────────────────────────────────────
+  const tpl  = state.templates?.memberSpotlight || '🌟 Spotlight: {name}\n#photography';
+  const text = renderTemplate(tpl, { name: highlight.name, username: highlight.username });
+
+  // ── Post intro + images in one post ────────────────────────────────────────
+  try {
+    await bsky.postPhotosWithText(entries, text);
+    logger.info(`Spotlight: posted intro + ${entries.length} images for @${highlight.username}`);
+    state.stats.totalPosted++;
+    state.stats.lastPostedAt = new Date().toISOString();
+    for (const { image } of entries) {
+      state.postedIds.push(image.id_encoded ?? image.id);
+    }
+    stateIO.save(state);
+  } catch (err) {
+    logger.error(`Spotlight: post failed for @${highlight.username}: ${err.message}`);
+  }
+
+  recordSpotlightHistory(state, highlight);
+}
+
+function recordSpotlightHistory(state, highlight) {
   state.spotlightHistory = state.spotlightHistory ?? [];
   state.spotlightHistory = state.spotlightHistory.filter(h => h.username !== highlight.username);
   state.spotlightHistory.unshift({
