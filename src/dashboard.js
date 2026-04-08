@@ -183,8 +183,8 @@ function startDashboard(state, postNowCallback) {
       const user = await chevereto.fetchUser(username);
       if (!user) return res.status(404).json({ error: `User not found: ${username}` });
 
-      const images = await chevereto.fetchUserImages(username);
-      logger.info(`Spotlight: fetched ${images.length} images for @${username}`);
+      const images = await chevereto.fetchUserSpotlightImages(username);
+      logger.info(`Spotlight queue: fetched ${images.length} representative images for @${username}`);
 
       state.highlights.push({
         type:     'spotlight',
