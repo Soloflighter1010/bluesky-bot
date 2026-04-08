@@ -161,21 +161,19 @@ async function cmdSpotlight(username, state) {
     const user   = await chevereto.fetchUser(username);
     if (!user) return `❌ User not found: ${username}`;
 
-    const images = await chevereto.fetchUserImages(username);
-    if (!images.length) return `❌ No images found for @${username}`;
+    const images = await chevereto.fetchUserSpotlightImages(username);
 
     state.highlights.push({
       type:     'spotlight',
       username: user.username,
       name:     user.name ?? user.username,
-      images:   images.slice(0, 3),
+      images:   images,
       queuedAt: new Date().toISOString(),
     });
 
     return [
       `🌟 Spotlight queued for @${user.username}!`,
-      `Display name: ${user.name ?? user.username}`,
-      `Total uploads: ${user.images_total ?? '?'}`,
+      `Images found: ${images.length} (most recent, most viewed, most liked)`,
       `It'll post at the next posting cycle.`,
     ].join('\n');
   } catch (err) {
