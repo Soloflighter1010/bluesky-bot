@@ -10,6 +10,7 @@ const chevereto = require('./chevereto');
 const bsky      = require('./bluesky');
 const stateIO   = require('./state');
 const logger    = require('./logger');
+const webhook   = require('./webhook');
 
 const POSTS_PER_HOUR    = parseInt(process.env.POSTS_PER_HOUR || '4', 10);
 const STAGGER_SCHED_MS  = 5 * 60 * 1000;  // 5 min between scheduled posts
@@ -108,15 +109,19 @@ async function postAlbumHighlight(highlight, state) {
   const text = renderTemplate(tpl, { title: highlight.title });
 
   try {
+    let postRef;
     if (highlight.coverImage) {
       const { buffer, mimeType } = await chevereto.downloadImage(highlight.coverImage);
       const blob = await bsky.uploadBlob(buffer, mimeType);
-      await bsky.postPhoto(highlight.coverImage, blob, text, true);
+      postRef = await bsky.postPhoto(highlight.coverImage, blob, text, true);
     } else {
-      await bsky.postText(text);
+      postRef = await bsky.postText(text);
     }
     state.stats.totalPosted++;
     state.stats.lastPostedAt = new Date().toISOString();
+
+    // Webhook
+    await webhook.sendWebhook(state, webhook.buildAlbumPayload(postRef, text, highlight));
   } catch (err) {
     logger.error(`Album highlight failed: ${err.message}`);
   }
@@ -175,7 +180,7 @@ async function postMemberSpotlight(highlight, state, staggerMs) {
 
   // ── Post intro + images in one post ────────────────────────────────────────
   try {
-    await bsky.postPhotosWithText(entries, text);
+    const postRef = await bsky.postPhotosWithText(entries, text);
     logger.info(`Spotlight: posted intro + ${entries.length} images for @${highlight.username}`);
     state.stats.totalPosted++;
     state.stats.lastPostedAt = new Date().toISOString();
@@ -183,6 +188,13 @@ async function postMemberSpotlight(highlight, state, staggerMs) {
       state.postedIds.push(image.id_encoded ?? image.id);
     }
     stateIO.save(state);
+
+    // Webhook
+    const webhookPayload = webhook.buildSpotlightPayload(
+      postRef, text, entries, highlight, state.userMappings ?? {}
+    );
+    await webhook.sendWebhook(state, webhookPayload);
+
   } catch (err) {
     logger.error(`Spotlight: post failed for @${highlight.username}: ${err.message}`);
   }
@@ -397,6 +409,12 @@ async function postBatch(state, staggerMs) {
   const linkText   = linkLines.join('\n');
   const linkChunks = chunkText(linkText);
   await sendChunkedReplies(postRef, lastRef, linkChunks);
+
+  // ── Webhook — fire after all replies are posted ────────────────────────────
+  const webhookPayload = webhook.buildBatchPayload(
+    postRef, text, downloaded, vrcxByImageId, state.userMappings ?? {}
+  );
+  await webhook.sendWebhook(state, webhookPayload);
 
   logger.info(`postBatch: cycle complete — ${downloaded.length} images posted with reply thread`);
 }
