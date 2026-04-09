@@ -12,9 +12,12 @@ const DEFAULT_STATE = {
   postedIds: [],
   highlights: [],
   spotlightHistory: [],
-  customTags: ['#photography', '#VRChat'],  // shown on every regular post
+  customTags: ['#photography', '#VRChat'],
   // Maps Chevereto username → Bluesky handle, e.g. { "alice": "alice.bsky.social" }
   userMappings: {},
+  // Crossposting webhook (Make / Zapier)
+  webhookUrl:     '',    // POST target URL
+  webhookEnabled: false, // must be explicitly enabled after setting URL
   stats: {
     totalPosted: 0,
     lastPostedAt: null,
@@ -37,8 +40,10 @@ function load() {
       return {
         ...DEFAULT_STATE,
         ...saved,
-        customTags:   saved.customTags   ?? DEFAULT_STATE.customTags,
-        userMappings: saved.userMappings ?? {},
+        customTags:      saved.customTags      ?? DEFAULT_STATE.customTags,
+        userMappings:    saved.userMappings    ?? {},
+        webhookUrl:      saved.webhookUrl      ?? '',
+        webhookEnabled:  saved.webhookEnabled  ?? false,
         templates:  { ...DEFAULT_STATE.templates, ...(saved.templates || {}) },
         stats:      { ...DEFAULT_STATE.stats,     ...(saved.stats     || {}) },
       };
