@@ -49,6 +49,45 @@ function startDashboard(state, postNowCallback) {
     res.json({ history: state.spotlightHistory ?? [] });
   });
 
+  // ── Webhook config ────────────────────────────────────────────────────────────
+  app.get('/api/webhook', requireAuth, (req, res) => {
+    res.json({ webhookUrl: state.webhookUrl ?? '', webhookEnabled: state.webhookEnabled ?? false });
+  });
+
+  app.post('/api/webhook', requireAuth, (req, res) => {
+    const { webhookUrl, webhookEnabled } = req.body;
+    if (typeof webhookUrl === 'string')   state.webhookUrl     = webhookUrl.trim();
+    if (typeof webhookEnabled === 'boolean') state.webhookEnabled = webhookEnabled;
+    stateIO.save(state);
+    logger.info(`Dashboard: webhook ${state.webhookEnabled ? 'enabled' : 'disabled'} → ${state.webhookUrl || '(none)'}`);
+    res.json({ ok: true, webhookUrl: state.webhookUrl, webhookEnabled: state.webhookEnabled });
+  });
+
+  // Test endpoint — fires a sample payload immediately
+  app.post('/api/webhook/test', requireAuth, async (req, res) => {
+    const url = state.webhookUrl?.trim();
+    if (!url) return res.status(400).json({ error: 'No webhook URL configured' });
+    try {
+      const webhookModule = require('./webhook');
+      await require('axios').post(url, {
+        event:         'test',
+        postedAt:      new Date().toISOString(),
+        blueskyUrl:    '',
+        text:          '🧪 This is a test webhook from PhotoBot',
+        images:        [],
+        worlds:        [],
+        photographers: [],
+        replyText:     '',
+        linkText:      '',
+      }, { timeout: 8_000, headers: { 'Content-Type': 'application/json' } });
+      logger.info('Dashboard: webhook test delivered');
+      res.json({ ok: true, message: 'Test payload delivered' });
+    } catch (err) {
+      logger.warn(`Dashboard: webhook test failed — ${err.message}`);
+      res.status(500).json({ error: `Delivery failed: ${err.message}` });
+    }
+  });
+
   // ── User mappings ─────────────────────────────────────────────────────────────
   // Maps Chevereto username → Bluesky handle for proper @mentions in posts
 
