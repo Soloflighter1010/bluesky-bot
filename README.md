@@ -206,6 +206,91 @@ before falling back to scraping the user's profile page directly.
 
 ---
 
+## Crossposting via Make / Zapier + Buffer
+
+After every successful post the bot fires a webhook to a URL you configure in the
+dashboard. Make or Zapier receives a structured JSON payload and can route it to
+Buffer (which then schedules it to X, Instagram, Facebook, etc.) or directly to
+any platform they support.
+
+### Setting it up
+
+1. Open the dashboard → **📡 Crossposting Webhook** section
+2. Paste your Make or Zapier webhook URL
+3. Click **Save**, then **Send Test** to confirm delivery
+4. Tick **Enabled** and save again
+
+### Webhook payload
+
+Every event includes the same core fields:
+
+```json
+{
+  "event":         "post",
+  "postedAt":      "2026-04-08T12:00:00.000Z",
+  "blueskyUrl":    "https://bsky.app/profile/.../post/...",
+  "text":          "📸 @alice.bsky.social\n#photography #VRChat",
+  "images": [
+    {
+      "viewerUrl":  "https://images.yoursite.com/image/AbCd123",
+      "directUrl":  "https://cdn.yoursite.com/2026/04/image.png",
+      "altText":    "The Black Cat | https://vrchat.com/home/world/wrld_...",
+      "vrcx": {
+        "worldName": "The Black Cat",
+        "worldUrl":  "https://vrchat.com/home/world/wrld_4cf4e...",
+        "worldId":   "wrld_4cf4e..."
+      }
+    }
+  ],
+  "worlds": [
+    {
+      "worldName":    "The Black Cat",
+      "worldUrl":     "https://vrchat.com/home/world/wrld_4cf4e...",
+      "worldId":      "wrld_4cf4e...",
+      "imageNumbers": [1, 3]
+    }
+  ],
+  "photographers": ["@alice.bsky.social"],
+  "replyText":     "🌍 World Information\nImages 1 & 3 — The Black Cat\nVisit: https://...",
+  "linkText":      "🔗 View on Chevereto\nImage 1: https://...\nImage 2: https://..."
+}
+```
+
+`event` can be `"post"` (regular batch), `"spotlight"` (member spotlight), or `"album"`.
+
+### Make scenario
+
+1. **Trigger:** Custom Webhook — copy the webhook URL into the dashboard
+2. **Router:** branch on `event` if you want different handling per type
+3. **Iterator:** over `images[]` to process each photo
+4. **Buffer — Create Post:** map fields:
+   - Caption: `{{text}}` + newline + `{{replyText}}` (truncate to platform limit)
+   - Media URL: `{{directUrl}}` from the iterator
+   - Profile: whichever X / Instagram account you've linked to Buffer
+5. Send a test from the dashboard, then run the scenario once manually to confirm
+
+### Zapier scenario
+
+1. **Trigger:** Webhooks by Zapier → Catch Hook
+2. **Action:** Buffer → Add to Buffer
+   - Caption: combine `text` and `replyText` fields
+   - Photo URL: `directUrl` from `images` (use Zapier's line-item support)
+
+### Platform-specific notes
+
+**X (Twitter):** Images must be under 5 MB each. The bot already compresses to
+stay under Bluesky's 1 MB limit so this is automatically satisfied.
+
+**Instagram:** Requires a Business or Creator account linked to a Facebook Page.
+Buffer handles this via their Instagram integration — the bot just supplies the
+image URL and caption.
+
+**Caption length:** Use `text` alone for short captions, or append `replyText`
+for the world info block. Truncate at the platform limit before passing to Buffer
+(Twitter: 280, Instagram: 2200).
+
+---
+
 ## Exposing the Dashboard Publicly
 
 Never expose port 3000 directly. Use a reverse proxy with HTTPS.
