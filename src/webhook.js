@@ -72,8 +72,9 @@ function buildBatchPayload(postRef, text, downloaded, vrcxByImageId, userMapping
   const images = downloaded.map(({ image }) => {
     const vrcx = vrcxByImageId[image.id] ?? null;
     return {
-      viewerUrl:  image.url_viewer || '',
-      directUrl:  image.url        || '',
+      viewerUrl:    image.url_viewer  || '',
+      directUrl:    image.url         || '',
+      thumbnailUrl: image.medium?.url || image.url || '',  // web-sized, safe for Instagram/X
       altText:    vrcx
         ? (vrcx.worldUrl ? `${vrcx.worldName} | ${vrcx.worldUrl}` : vrcx.worldName)
         : '',
@@ -140,11 +141,12 @@ function buildSpotlightPayload(postRef, text, entries, highlight, userMappings =
   const blueskyUrl = postRefToUrl(postRef);
 
   const images = entries.map(({ image, altText }) => ({
-    viewerUrl: image.url_viewer || '',
-    directUrl: image.url        || '',
-    altText:   altText || '',
-    vrcx:      null,
-    role:      image.spotlightRole || '',
+    viewerUrl:    image.url_viewer  || '',
+    directUrl:    image.url         || '',
+    thumbnailUrl: image.medium?.url || image.url || '',
+    altText:      altText || '',
+    vrcx:         null,
+    role:         image.spotlightRole || '',
   }));
 
   const linkLines = ['🔗 View on Chevereto'];
