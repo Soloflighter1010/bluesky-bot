@@ -1,24 +1,67 @@
 services:
-  photobot:
+  photobot-worker:
     build: .
-    container_name: photobot
+    command: node src/bot.js
+    container_name: photobot-worker
     restart: unless-stopped
 
-    # All secrets live in .env — Docker reads it automatically
+    env_file:
+      - .env
+
+    # Internal API port — deliberately NOT forwarded to the host.
+    # Only the dashboard container (on the same Docker network) can reach it.
+    # DASHBOARD_PORT / the web UI lives in photobot-dashboard below.
+    expose:
+      - "3001"
+
+    volumes:
+      - /media/Sea1/AppData/photobot:/app/data
+
+    environment:
+      - STATE_FILE=/app/data/bot-state.json
+      - LOG_FILE=/app/data/bot.log
+      - WORLD_STATS_FILE=/app/data/world-stats.json
+      - KUTT_CACHE_FILE=/app/data/kutt-cache.json
+      - BOT_INTERNAL_PORT=3001
+
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:3001/internal/health"]
+      interval: 60s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+
+  photobot-dashboard:
+    build: .
+    command: node src/serve.js
+    container_name: photobot-dashboard
+    restart: unless-stopped
+
     env_file:
       - .env
 
     ports:
+      # Host-side port is controlled by DASHBOARD_PORT in .env.
+      # The app always listens on 3000 inside the container.
       - "${DASHBOARD_PORT:-3000}:3000"
 
     volumes:
-      # Persistent state (bot-state.json) and logs survive container restarts
-      - ./data:/app/data
+      - /media/Sea1/AppData/photobot:/app/data
 
-    # Point state file and log at the mounted volume
     environment:
       - STATE_FILE=/app/data/bot-state.json
       - LOG_FILE=/app/data/bot.log
+      - WORLD_STATS_FILE=/app/data/world-stats.json
+      - KUTT_CACHE_FILE=/app/data/kutt-cache.json
+      - DASHBOARD_PORT=3000
+      # How to reach the bot worker's internal API from this container.
+      # Container name is the hostname on the shared Docker network.
+      - BOT_INTERNAL_HOST=photobot-worker
+      - BOT_INTERNAL_PORT=3001
+
+    depends_on:
+      photobot-worker:
+        condition: service_healthy
 
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://localhost:3000/api/status"]
@@ -26,3 +69,6 @@ services:
       timeout: 10s
       retries: 3
       start_period: 20s
+
+volumes:
+  photobot-data:
