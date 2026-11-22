@@ -1,0 +1,9 @@
+node_modules
+data
+bot-state.json
+world-stats.json
+bot.log
+.env
+*.md
+.git
+.gitignore
