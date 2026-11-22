@@ -55,16 +55,19 @@ const COMMON_SEGMENTS = new Set([
   'image', 'images', 'img', 'photo', 'photos', 'album', 'albums',
   'user', 'users', 'explore', 'recent', 'search', 'upload', 'login',
   'register', 'about', 'contact', 'home', 'index', 'profile', 'settings',
-  'edit', 'delete', 'list', 'grid', 'page', 'view',
+  'edit', 'delete', 'list', 'grid', 'page', 'view', 'api-v1',
 ]);
 
 function extractImageId(viewerUrl) {
   try {
     const pathname = new URL(viewerUrl).pathname;
     const segments = pathname.split('/').filter(Boolean);
+    const lastSegment = segments.at(-1)?.split('.').pop();
+    if (segments.at(-2) === 'image' && /^[a-z\d]{1,20}$/i.test(lastSegment ?? '')) return lastSegment;
     // Walk from the end to find the first segment that looks like a hash
     for (let i = segments.length - 1; i >= 0; i--) {
-      const seg = segments[i];
+      // SEO viewer URLs use /image/<title>.<hash>.
+      const seg = segments[i].split('.').pop();
       if (seg.length >= 4 && seg.length <= 20 &&
           /^[a-zA-Z0-9]+$/.test(seg) &&
           !COMMON_SEGMENTS.has(seg.toLowerCase())) {
@@ -327,13 +330,29 @@ function filterExcludedUsers(images, excludedUsernames) {
  * Parse a Chevereto single-image viewer page.
  * Uses Open Graph meta tags which are reliably present on every viewer page.
  */
+function profileUsername(href, viewerUrl) {
+  if (!href) return '';
+  try {
+    const profile = new URL(href, viewerUrl);
+    const base = new URL(BASE_URL);
+    const prefix = base.pathname.replace(/\/$/, '') + '/';
+    if (profile.origin !== base.origin || !profile.pathname.startsWith(prefix)) return '';
+    const relative = profile.pathname.slice(prefix.length).replace(/\/$/, '');
+    const username = decodeURIComponent(relative.replace(/^user\//, '')).replace(/^@/, '');
+    if (/^[\w.-]+$/.test(username) && !COMMON_SEGMENTS.has(username.toLowerCase())) return username;
+  } catch {}
+  return '';
+}
+
 function parseViewerPage(html, viewerUrl) {
   const $ = cheerio.load(html);
 
-  const id = $('[data-id]').first().attr('data-id') || extractImageId(viewerUrl);
+  const id = $('[data-type="image"][data-action="like"][data-id]').first().attr('data-id') || extractImageId(viewerUrl);
 
-  // og:image is the full-size (or near-full-size) CDN URL
-  const ogImage = $('meta[property="og:image"]').attr('content') || '';
+  const imageSource = $('#image-viewer-container img, .image-viewer-main img').first().attr('src') ||
+    $('meta[property="og:image"]').attr('content');
+  if (!imageSource) throw new Error('Viewer page did not contain an image');
+  const ogImage = new URL(imageSource, viewerUrl).href;
 
   const directUrl = ogImage
     .replace(/\/thumbs\//, '/')
@@ -343,31 +362,22 @@ function parseViewerPage(html, viewerUrl) {
     ? ogImage.replace(/\.(th)\.(jpg|jpeg|png|gif|webp)/i, '.md.$2')
     : '';
 
-  const title = ($('meta[property="og:title"]').attr('content') ||
-    $('h1').first().text() ||
-    $('title').text().split(/[–—|]/)[0] ||
-    'Untitled').trim().slice(0, 200);
+  const viewerTitle = $('h1[data-text="image-title"], h1.viewer-title');
+  const title = (viewerTitle.length
+    ? viewerTitle.not('.soft-hidden, [hidden]').first().text()
+    : $('meta[property="og:title"]').attr('content') || '').trim().slice(0, 200);
 
-  // Username — look for single-segment profile links
-  let username = '';
-  $('a[href]').each((_, a) => {
-    const href  = $(a).attr('href') || '';
-    const local = href.replace(BASE_URL, '');
-    const parts = local.split('/').filter(Boolean);
-    if (
-      parts.length === 1 &&
-      !COMMON_SEGMENTS.has(parts[0].toLowerCase()) &&
-      /^[a-zA-Z0-9_.-]+$/.test(parts[0])
-    ) {
-      username = parts[0];
-      return false; // break
-    }
-  });
+  // Chevereto's viewer owner card links to the uploader's profile. Generic
+  // navigation links can point to pages such as /api-v1 or to other users.
+  const ownerLinks = $('.header-content-breadcrum a.user-link, .image-uploader a[href], a.user-link[rel~="author"]');
+  const authorLinks = $('a[rel~="author"], [itemprop="author"] a[href]');
+  const username = [...ownerLinks, ...authorLinks]
+    .map(link => profileUsername($(link).attr('href'), viewerUrl)).find(Boolean);
 
   return {
     id,
     id_encoded: id,
-    url:        directUrl || ogImage || viewerUrl,
+    url:        directUrl,
     url_viewer: viewerUrl,
     medium:     { url: ogImage || directUrl },
     mediumUrl:  mediumUrl || ogImage || directUrl,
@@ -391,7 +401,7 @@ async function fetchRandomImageUrl() {
   });
   const location = res.headers?.location;
   if (!location) throw new Error('/?random did not return a redirect — check Chevereto config');
-  return location.startsWith('http') ? location : `${BASE_URL}${location}`;
+  return new URL(location, `${BASE_URL}/`).href;
 }
 
 /**
@@ -423,8 +433,11 @@ async function fetchRandomImages(n, excludeIds = [], excludedUsernames = new Set
       const img = await fetchOneRandomImage();
       const id  = img.id_encoded ?? img.id;
       const username = (img.user?.username || '').toLowerCase();
-      const isExcludedUploader = username && excludedUsernames.has(username);
-      if (!excludeSet.has(id) && !seenIds.has(id) && !isExcludedUploader) {
+      if (!username) {
+        logger.warn(`fetchRandomImages: skipping ${id} because the viewer has no identifiable uploader`);
+        continue;
+      }
+      if (!excludeSet.has(id) && !seenIds.has(id) && !excludedUsernames.has(username)) {
         seenIds.add(id);
         results.push(img);
         logger.info(`fetchRandomImages: picked ${id} (${results.length}/${n})`);

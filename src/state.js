@@ -4,9 +4,11 @@
 
 const fs   = require('fs');
 const path = require('path');
-const logger = require('./logger');
+const { createHash, randomUUID } = require('node:crypto');
+const lockfile = require('proper-lockfile');
+const { writeJSON } = require('./jsonfile');
 
-const STATE_FILE = process.env.STATE_FILE || path.join(__dirname, '..', 'bot-state.json');
+const STATE_FILE = path.resolve(process.env.STATE_FILE || path.join(__dirname, '..', 'bot-state.json'));
 
 const DEFAULT_STATE = {
   running: true,
@@ -84,7 +86,7 @@ function load() {
       // Old format: { "alice": "alice.bsky.social" }
       // New format: { "alice": { bluesky: "alice.bsky.social", twitter: "", instagram: "" } }
       const savedMappings = saved.userMappings ?? {};
-      const migratedMappings = {};
+      const migratedMappings = Object.create(null);
       for (const [chev, val] of Object.entries(savedMappings)) {
         if (typeof val === 'string') {
           migratedMappings[chev] = { bluesky: val, twitter: '', instagram: '' };
@@ -96,6 +98,10 @@ function load() {
       return {
         ...DEFAULT_STATE,
         ...saved,
+        highlights: (saved.highlights ?? []).map(item => ({
+          ...item,
+          id: item.id ?? createHash('sha256').update(JSON.stringify(item)).digest('hex'),
+        })),
         randomMode:       saved.randomMode       ?? false,
         customTags:       saved.customTags       ?? DEFAULT_STATE.customTags,
         membershipDrafts: saved.membershipDrafts ?? [],
@@ -107,35 +113,36 @@ function load() {
         stats:     { ...DEFAULT_STATE.stats,     ...(saved.stats     || {}) },
       };
     }
-  } catch (e) { /* ignore, start fresh */ }
-  return JSON.parse(JSON.stringify(DEFAULT_STATE));
+  } catch (err) {
+    if (err.code !== 'ENOENT') throw err;
+  }
+  return structuredClone(DEFAULT_STATE);
 }
 
-function save(state) {
-  // membershipDrafts — membershipdrafts.js already caps this
-  // at 50 before calling save(), this is just a safety net in case some
-  // future caller forgets. Newest-first (unshifted), so keep the front.
-  if (state.membershipDrafts && state.membershipDrafts.length > 50) {
-    state.membershipDrafts = state.membershipDrafts.slice(0, 50);
-  }
-
-  // Call mkdirSync unconditionally — { recursive: true } makes it a no-op when
-  // the directory already exists, and avoids a TOCTOU race between existsSync
-  // and writeFileSync (the dir can vanish between the two calls on Docker/WSL2).
-  const dir = path.dirname(STATE_FILE);
+// Both containers use this short transaction. Keep external requests outside mutate.
+async function update(mutate) {
+  await fs.promises.mkdir(path.dirname(STATE_FILE), { recursive: true });
+  const release = await lockfile.lock(STATE_FILE, {
+    realpath: false,
+    retries: { retries: 10, minTimeout: 10, maxTimeout: 250, randomize: true },
+  });
   try {
-    fs.mkdirSync(dir, { recursive: true });
-    fs.writeFileSync(STATE_FILE, JSON.stringify(state, null, 2));
-  } catch (err) {
-    // Log but don't re-throw — a failed save is recoverable; state stays in
-    // memory and the next save attempt may succeed. Re-throwing would crash the
-    // process when save() is called from a fire-and-forget async context.
-    logger.error(`state.save: could not write ${STATE_FILE} — ${err.message}`);
+    const state = load();
+    const result = mutate(state);
+    if (state.membershipDrafts.length > 50) state.membershipDrafts.length = 50;
+    writeJSON(STATE_FILE, state);
+    return result;
+  } finally {
+    await release();
   }
+}
+
+function enqueueHighlight(state, highlight) {
+  return state.highlights.push({ ...highlight, id: randomUUID(), queuedAt: new Date().toISOString() });
 }
 
 module.exports = {
-  load, save, DEFAULT_STATE,
+  load, update, enqueueHighlight, DEFAULT_STATE,
   getExcludedUsernameSet, isExcluded, pruneExpiredExclusions,
 };
 
@@ -170,7 +177,9 @@ function getExcludedUsernameSet(state) {
  * (spotlight/album) where building a whole Set is unnecessary overhead. */
 function isExcluded(state, username) {
   if (!username) return false;
-  return isEntryActive((state.excludedUsers || {})[username.toLowerCase()]);
+  const entries = state.excludedUsers || {};
+  const key = username.toLowerCase();
+  return Object.hasOwn(entries, key) && isEntryActive(entries[key]);
 }
 
 /**

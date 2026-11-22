@@ -29,7 +29,7 @@ const crypto = require('crypto');
 const axios  = require('axios');
 const sharp  = require('sharp');
 const logger = require('./logger');
-const { SESSION_SECRET } = require('./secrets');
+const { RENDER_SECRET } = require('./secrets');
 
 const CHEVERETO_BASE = (process.env.CHEVERETO_BASE_URL || '').replace(/\/$/, '');
 const PUBLIC_BASE_URL = (process.env.PUBLIC_BASE_URL || '').trim().replace(/\/$/, '');
@@ -38,10 +38,10 @@ const LONG_EDGE    = 2048; // px — comfortably sharper than Chevereto's ~1280p
 const JPEG_QUALITY = 88;
 const SIG_TTL_MS   = 24 * 60 * 60 * 1000; // 24h — plenty of slack for Buffer's fetch queue
 
-let warnedNoPublicUrl = false;
+let warnedRenderUnavailable = false;
 
 function derivedKey() {
-  return crypto.createHmac('sha256', SESSION_SECRET).update('photobot-render-v1').digest();
+  return crypto.createHmac('sha256', RENDER_SECRET).update('photobot-render-v1').digest();
 }
 
 function sign(src, exp) {
@@ -57,10 +57,10 @@ function sign(src, exp) {
 function buildRenderUrl(src) {
   if (!src) return null;
 
-  if (!PUBLIC_BASE_URL) {
-    if (!warnedNoPublicUrl) {
-      logger.warn('imagerender: PUBLIC_BASE_URL not set — Twitter/Instagram will keep using Chevereto\'s standard .md. thumbnail instead of the higher-quality render. Set PUBLIC_BASE_URL in .env (e.g. https://photobot.yourdomain.com) to enable it.');
-      warnedNoPublicUrl = true;
+  if (!PUBLIC_BASE_URL || !RENDER_SECRET) {
+    if (!warnedRenderUnavailable) {
+      logger.warn('imagerender: using Chevereto thumbnails. Set PUBLIC_BASE_URL and a unique shared SESSION_SECRET to enable high-resolution renders.');
+      warnedRenderUnavailable = true;
     }
     return null;
   }
@@ -73,8 +73,8 @@ function buildRenderUrl(src) {
 }
 
 function verify(src, exp, sig) {
-  if (!src || !exp || !sig) return false;
-  if (Date.now() > Number(exp)) return false;
+  if (!RENDER_SECRET || typeof src !== 'string' || typeof exp !== 'string' || typeof sig !== 'string') return false;
+  if (!/^\d+$/.test(exp) || Date.now() >= Number(exp) || !/^[a-f0-9]{64}$/.test(sig)) return false;
   if (!CHEVERETO_BASE || !src.startsWith(CHEVERETO_BASE + '/')) return false;
 
   const expected = sign(src, exp);
@@ -100,16 +100,19 @@ async function renderHandler(req, res) {
     const { data } = await axios.get(src, {
       responseType: 'arraybuffer',
       timeout: 20_000,
+      maxContentLength: 30 * 1024 * 1024,
+      maxRedirects: 0,
       headers: { 'User-Agent': 'Mozilla/5.0 (compatible; PhotoBot/1.0)' },
     });
 
-    const jpeg = await sharp(Buffer.from(data))
+    const jpeg = await sharp(Buffer.from(data), { limitInputPixels: 64_000_000 })
       .resize(LONG_EDGE, LONG_EDGE, { fit: 'inside', withoutEnlargement: true })
       .jpeg({ quality: JPEG_QUALITY, progressive: true })
       .toBuffer();
 
     res.set('Content-Type', 'image/jpeg');
-    res.set('Cache-Control', 'public, max-age=86400, immutable');
+    const maxAge = Math.max(0, Math.floor((Number(exp) - Date.now()) / 1000));
+    res.set('Cache-Control', `public, max-age=${maxAge}, immutable`);
     res.send(jpeg);
   } catch (err) {
     logger.warn(`imagerender: failed to render ${src} — ${err.message}`);

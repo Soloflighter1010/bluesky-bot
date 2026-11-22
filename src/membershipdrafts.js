@@ -27,7 +27,6 @@
  */
 
 const logger      = require('./logger');
-const stateIO     = require('./state');
 const imagerender = require('./imagerender');
 
 const DRAFTS_MAX = 50;
@@ -134,7 +133,6 @@ function addDraft(state, { sourceType, sourceTitle, worldInfo, photographers, im
     state.membershipDrafts.length = DRAFTS_MAX; // newest-first — truncating the tail drops the oldest
   }
 
-  stateIO.save(state);
   logger.info(`membershipdrafts: recorded ${sourceType} draft — "${sourceTitle}"`);
   return draft;
 }
@@ -201,7 +199,6 @@ function trackBatch(state, { downloaded, worldGroups }) {
     tr.monthWorlds[vrcx.worldId] = { worldName: vrcx.worldName, worldUrl: vrcx.worldUrl };
   }
 
-  stateIO.save(state);
   logger.info(`membershipdrafts: roundup tracking +${count} image(s) — week=${tr.weekImageCount}, month=${tr.monthImageCount}`);
 }
 
@@ -417,7 +414,6 @@ function checkRoundups(state) {
     tr.monthWorlds = {};
   }
 
-  stateIO.save(state);
 }
 
 /** Read-only snapshot for the dashboard — how much has accumulated so far this period. */

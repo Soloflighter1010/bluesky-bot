@@ -5,21 +5,26 @@
   "main": "src/bot.js",
   "scripts": {
     "start": "node src/bot.js",
-    "dev": "nodemon src/bot.js"
+    "dev": "nodemon src/bot.js",
+    "test": "node --test"
   },
   "dependencies": {
-    "@atproto/api": "^0.13.23",
+    "@atproto/api": "^0.13.35",
     "axios": "^1.7.2",
     "cheerio": "^1.0.0",
-    "express": "^4.19.2",
-    "express-session": "^1.18.0",
-    "node-cron": "^3.0.3",
     "dotenv": "^16.4.5",
+    "express": "^5.3.0",
+    "express-session": "^1.18.0",
+    "node-cron": "^4.6.0",
     "openid-client": "^5.7.0",
-    "sharp": "^0.33.4",
+    "proper-lockfile": "^4.1.2",
+    "sharp": "^0.35.5",
     "winston": "^3.13.0"
   },
   "devDependencies": {
     "nodemon": "^3.1.4"
+  },
+  "engines": {
+    "node": ">=20.18.1"
   }
 }

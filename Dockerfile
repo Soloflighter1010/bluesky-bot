@@ -1,12 +1,9 @@
-FROM node:20-alpine
-
-# sharp needs these for image processing
-RUN apk add --no-cache libc6-compat vips-dev python3 make g++
+FROM node:24-alpine
 
 WORKDIR /app
 
-COPY package.json ./
-RUN npm install --omit=dev
+COPY package.json package-lock.json ./
+RUN npm ci --omit=dev
 
 COPY src/ ./src/
 COPY dashboard/ ./dashboard/
