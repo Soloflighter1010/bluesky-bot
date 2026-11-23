@@ -91,6 +91,18 @@ function makeRateLimiter({ windowMs, max }) {
 const authRateLimit = makeRateLimiter({ windowMs: 15 * 60_000, max: 20  });
 const generalLimit  = makeRateLimiter({ windowMs: 60_000,       max: 120 });
 
+function hasDashboardSecret(req) {
+  const provided = Buffer.from((req.get('x-dashboard-secret') || '').trim());
+  return SECRET && provided.length === SECRET.length && crypto.timingSafeEqual(provided, SECRET);
+}
+
+function verifyCsrfToken(expected, received) {
+  if (typeof expected !== 'string' || typeof received !== 'string') return false;
+  const a = Buffer.from(expected);
+  const b = Buffer.from(received);
+  return a.length === b.length && crypto.timingSafeEqual(a, b);
+}
+
 // ── OIDC client (initialised async; null if not configured) ───────────────────
 let oidcClient     = null;
 let oidcGenerators = null;
@@ -160,6 +172,16 @@ async function startDashboard() {
     },
   }));
 
+  app.use(function protectSessionWrites(req, res, next) {
+    if (['GET', 'HEAD', 'OPTIONS'].includes(req.method)) return next();
+    // Shared-secret clients supply their credentials on each request.
+    if (!req.session?.authenticated || hasDashboardSecret(req)) return next();
+    if (!verifyCsrfToken(req.session.csrfToken, req.get('x-csrf-token'))) {
+      return res.status(403).json({ error: 'Invalid CSRF token. Reload the dashboard and try again.' });
+    }
+    next();
+  });
+
   // Trust the first proxy hop (needed for req.ip and secure cookies behind nginx/Caddy)
   if (process.env.TRUST_PROXY === 'true') app.set('trust proxy', 1);
 
@@ -168,12 +190,7 @@ async function startDashboard() {
   // ── Auth middleware ───────────────────────────────────────────────────────────
   // Accepts either a valid session (OIDC) or the x-dashboard-secret header.
   function requireAuth(req, res, next) {
-    // 1. Session auth (OIDC login)
-    if (req.session?.authenticated === true) return next();
-
-    // 2. Header auth (shared secret)
-    const incoming = Buffer.from((req.headers['x-dashboard-secret'] || '').trim());
-    if (SECRET && incoming.length === SECRET.length && crypto.timingSafeEqual(incoming, SECRET)) return next();
+    if (req.session?.authenticated === true || hasDashboardSecret(req)) return next();
 
     logger.warn(`Dashboard: auth failed from ${req.ip} on ${req.path}`);
     res.status(401).json({ error: 'Unauthorized' });
@@ -257,7 +274,7 @@ async function startDashboard() {
   });
 
   // POST /auth/logout — destroy session and optionally end IdP session
-  app.post('/auth/logout', (req, res) => {
+  app.post('/auth/logout', requireAuth, (req, res) => {
     const user = req.session?.user;
     req.session.destroy(err => {
       if (err) logger.warn(`OIDC: session destroy error — ${err.message}`);
@@ -281,11 +298,15 @@ async function startDashboard() {
   // ── Auth config (public) ──────────────────────────────────────────────────────
   // Called by the dashboard on load to decide which auth UI to show.
   app.get('/api/auth/config', (req, res) => {
+    const sessionAuth = req.session?.authenticated === true;
+    if (sessionAuth) req.session.csrfToken ??= crypto.randomBytes(32).toString('hex');
+    res.set('Cache-Control', 'no-store');
     res.json({
       oidcEnabled:   !!oidcClient,
-      sessionAuth:   req.session?.authenticated === true,
+      sessionAuth,
       user:          req.session?.user ?? null,
       secretEnabled: !!SECRET,
+      csrfToken:     sessionAuth ? req.session.csrfToken : null,
     });
   });
 

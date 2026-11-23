@@ -60,6 +60,7 @@ Open `.env` in any text editor and fill in your values.
 | Variable | Default | Description |
 |---|---|---|
 | `POSTS_PER_HOUR` | `4` | Number of photos per hourly gallery post, from 1 to 4 |
+| `CHEVERETO_MEDIA_ORIGINS` | _(unset)_ | Comma-separated origins for image downloads from a separate CDN or storage host. The Chevereto site origin is included automatically. |
 | `PHOTOBOT_DATA_DIR` | See [Persistent Data](#persistent-data) | Shared named volume or absolute host directory |
 | `SESSION_SECRET` | _(unset)_ | A separate long random string shared by both services. Required for high-resolution Buffer renders. |
 | `RECENCY_BIAS` | `1.5` | Higher = newer photos favoured more strongly (1 = uniform random) |

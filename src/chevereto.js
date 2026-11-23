@@ -12,6 +12,13 @@ const sharp   = require('sharp');
 const logger  = require('./logger');
 
 const BASE_URL = process.env.CHEVERETO_BASE_URL?.replace(/\/$/, '');
+const SITE_URL = BASE_URL ? new URL(`${BASE_URL}/`) : undefined;
+const SITE_ORIGINS = SITE_URL ? [SITE_URL.origin] : [];
+const MEDIA_ORIGINS = [
+  ...SITE_ORIGINS,
+  ...(process.env.CHEVERETO_MEDIA_ORIGINS || '').split(',').map(value => value.trim()).filter(Boolean)
+    .map(value => new URL(value).origin),
+];
 const BIAS     = parseFloat(process.env.RECENCY_BIAS || '1.5');
 
 // ─── HTTP helpers ─────────────────────────────────────────────────────────────
@@ -21,17 +28,60 @@ const HTTP_HEADERS = {
   'Accept':     'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
 };
 
+const PAGE_OPTIONS = { timeout: 15_000, headers: HTTP_HEADERS };
+const REDIRECT_STATUSES = new Set([301, 302, 303, 307, 308]);
+
+async function trustedGet(input, options, { media = false, followRedirects = true } = {}) {
+  const allowedOrigins = media ? MEDIA_ORIGINS : SITE_ORIGINS;
+  const acceptStatus = options.validateStatus ?? (status => status >= 200 && status < 300);
+  let target = new URL(input, SITE_URL);
+  for (let redirects = 0; redirects <= 4; redirects++) {
+    const origin = allowedOrigins.find(allowed => allowed === target.origin);
+    if (!origin || !['https:', 'http:'].includes(target.protocol) || target.username || target.password ||
+        (!media && !target.pathname.startsWith(SITE_URL.pathname) &&
+         target.pathname !== SITE_URL.pathname.slice(0, -1))) {
+      throw new Error('Chevereto URL is outside the configured site or media origins');
+    }
+
+    // Build the request from a configured origin and encoded path segments.
+    // Check each redirect before requesting it, including redirects from a CDN.
+    const path = target.pathname.split('/').map(segment => {
+      const decoded = decodeURIComponent(segment);
+      if (decoded.includes('/') || decoded.includes('\\')) {
+        throw new Error('Chevereto URL contains an invalid path segment');
+      }
+      return encodeURIComponent(decoded);
+    }).join('/');
+    const destination = `${origin}${path}`;
+    const url = target.search ? `${destination}?${target.search.slice(1)}` : destination;
+    const response = await axios.get(url, {
+      ...options,
+      maxRedirects: 0,
+      validateStatus: status => REDIRECT_STATUSES.has(status) || acceptStatus(status),
+    });
+    if (!followRedirects || !REDIRECT_STATUSES.has(response.status)) return { response, url };
+    if (!response.headers?.location) throw new Error('Chevereto redirect has no destination');
+    target = new URL(response.headers.location, url);
+  }
+  throw new Error('Too many Chevereto redirects');
+}
+
+function routeSegment(value) {
+  if (typeof value !== 'string' || !/^[\w.-]+$/.test(value) || value === '.' || value === '..') return null;
+  return encodeURIComponent(value);
+}
+
 async function fetchHTML(url) {
-  const { data } = await axios.get(url, { timeout: 15_000, headers: HTTP_HEADERS });
-  return data;
+  const { response } = await trustedGet(url, PAGE_OPTIONS);
+  return response.data;
 }
 
 async function fetchBuffer(url) {
-  const res = await axios.get(url, {
+  const { response: res } = await trustedGet(url, {
     responseType: 'arraybuffer',
     timeout: 30_000,
     headers: { 'User-Agent': HTTP_HEADERS['User-Agent'] },
-  });
+  }, { media: true });
   return {
     buffer:   Buffer.from(res.data),
     mimeType: (res.headers['content-type'] || 'image/jpeg').split(';')[0].trim(),
@@ -393,15 +443,14 @@ function parseViewerPage(html, viewerUrl) {
  * so we always know the exact destination URL for later parsing.
  */
 async function fetchRandomImageUrl() {
-  const res = await axios.get(`${BASE_URL}/?random`, {
+  const { response: res, url } = await trustedGet(`${BASE_URL}/?random`, {
+    ...PAGE_OPTIONS,
     timeout:        10_000,
-    headers:        HTTP_HEADERS,
-    maxRedirects:   0,
     validateStatus: s => s >= 200 && s < 400,
-  });
+  }, { followRedirects: false });
   const location = res.headers?.location;
   if (!location) throw new Error('/?random did not return a redirect — check Chevereto config');
-  return new URL(location, `${BASE_URL}/`).href;
+  return new URL(location, url).href;
 }
 
 /**
@@ -409,8 +458,8 @@ async function fetchRandomImageUrl() {
  */
 async function fetchOneRandomImage() {
   const viewerUrl = await fetchRandomImageUrl();
-  const html      = await fetchHTML(viewerUrl);
-  return parseViewerPage(html, viewerUrl);
+  const { response, url } = await trustedGet(viewerUrl, PAGE_OPTIONS);
+  return parseViewerPage(response.data, url);
 }
 
 /**
@@ -456,17 +505,18 @@ async function fetchRandomImages(n, excludeIds = [], excludedUsernames = new Set
 // ─── Album helpers ────────────────────────────────────────────────────────────
 
 async function fetchAlbum(albumIdOrHash) {
+  const id = routeSegment(Number.isSafeInteger(albumIdOrHash) ? String(albumIdOrHash) : albumIdOrHash);
+  if (!id) return null;
   const attempts = [
-    `${BASE_URL}/a/${albumIdOrHash}`,
-    `${BASE_URL}/album/${albumIdOrHash}`,
-    `${BASE_URL}/albums/${albumIdOrHash}`,
+    `${BASE_URL}/a/${id}`,
+    `${BASE_URL}/album/${id}`,
+    `${BASE_URL}/albums/${id}`,
   ];
 
   for (const url of attempts) {
     try {
-      const res = await axios.get(url, {
-        timeout: 15_000,
-        headers: HTTP_HEADERS,
+      const { response: res } = await trustedGet(url, {
+        ...PAGE_OPTIONS,
         validateStatus: s => s < 500,
       });
       if (res.status === 404) continue;
@@ -490,9 +540,11 @@ async function fetchAlbum(albumIdOrHash) {
 }
 
 async function fetchAlbumImages(albumIdOrHash) {
+  const id = routeSegment(Number.isSafeInteger(albumIdOrHash) ? String(albumIdOrHash) : albumIdOrHash);
+  if (!id) return [];
   const attempts = [
-    `${BASE_URL}/a/${albumIdOrHash}`,
-    `${BASE_URL}/album/${albumIdOrHash}`,
+    `${BASE_URL}/a/${id}`,
+    `${BASE_URL}/album/${id}`,
   ];
   for (const url of attempts) {
     try {
@@ -508,15 +560,16 @@ async function fetchAlbumImages(albumIdOrHash) {
 // ─── User helpers ─────────────────────────────────────────────────────────────
 
 async function fetchUser(username) {
+  const segment = routeSegment(username);
+  if (!segment) return null;
   const urls = [
-    `${BASE_URL}/${username}/images`,
-    `${BASE_URL}/${username}`,
+    `${BASE_URL}/${segment}/images`,
+    `${BASE_URL}/${segment}`,
   ];
   for (const url of urls) {
     try {
-      const res = await axios.get(url, {
-        timeout: 15_000,
-        headers: HTTP_HEADERS,
+      const { response: res } = await trustedGet(url, {
+        ...PAGE_OPTIONS,
         validateStatus: s => s < 500,
       });
       if (res.status === 404) continue;
@@ -544,6 +597,8 @@ async function fetchUser(username) {
  * Fallback: scrape the user's profile page directly.
  */
 async function fetchUserImages(username) {
+  const segment = routeSegment(username);
+  if (!segment) return [];
   const lc = username.toLowerCase();
 
   // ── Strategy 1: filter explore/recent ─────────────────────────────────────
@@ -563,8 +618,8 @@ async function fetchUserImages(username) {
 
   // ── Strategy 2: scrape profile page ───────────────────────────────────────
   const urls = [
-    `${BASE_URL}/${username}/images`,
-    `${BASE_URL}/${username}`,
+    `${BASE_URL}/${segment}/images`,
+    `${BASE_URL}/${segment}`,
   ];
   for (const url of urls) {
     try {
@@ -596,6 +651,8 @@ async function fetchUserImages(username) {
  * returns nothing new, it's simply omitted — callers get 1-3 images.
  */
 async function fetchUserSpotlightImages(username) {
+  const segment = routeSegment(username);
+  if (!segment) return [];
   const sorts = [
     { label: 'most recent',  sort: 'date_desc'  },
     { label: 'most viewed',  sort: 'views_desc'  },
@@ -606,7 +663,7 @@ async function fetchUserSpotlightImages(username) {
   const seenIds = new Set();
 
   for (const { label, sort } of sorts) {
-    const url = `${BASE_URL}/${username}/?list=images&sort=${sort}&page=1`;
+    const url = `${BASE_URL}/${segment}/?list=images&sort=${sort}&page=1`;
     try {
       logger.info(`fetchUserSpotlightImages: ${label} — ${url}`);
       const html = await fetchHTML(url);

@@ -8,12 +8,15 @@ const { promisify } = require('node:util');
 const { BskyAgent, RichText } = require('@atproto/api');
 const axios = require('axios');
 const cron = require('node-cron');
+const { Issuer } = require('openid-client');
 
 const dir = mkdtempSync(join(tmpdir(), 'photobot-tests-'));
 const base = 'https://photos.example.test/gallery';
+const mediaOrigin = 'https://cdn.example.test';
 const adminSecret = 'fixture-dashboard-secret-for-tests';
 Object.assign(process.env, {
   CHEVERETO_BASE_URL: base,
+  CHEVERETO_MEDIA_ORIGINS: mediaOrigin,
   DASHBOARD_PORT: '0',
   DASHBOARD_SECRET: adminSecret,
   STATE_FILE: join(dir, 'state.json'),
@@ -70,6 +73,47 @@ function viewer(title, photographer) {
     <button data-type="album" data-id="wrongAlbum"></button>
     ${author}<h1 class="viewer-title" data-text="image-title">${title}</h1>`;
 }
+
+test('random viewer redirects stay on the gallery origin while canonical redirects still work', async t => {
+  const random = `${base}/?random`;
+  const original = `${base}/image/AA01`;
+  const canonical = `${base}/image/gallery-title.AA01`;
+  let randomCalls = 0;
+  const request = t.mock.method(axios, 'get', async url => {
+    if (url === random) return {
+      status: 302, headers: { location: ++randomCalls === 1 ? `${mediaOrigin}/preview` : original },
+    };
+    if (url === original) return { status: 302, headers: { location: 'gallery-title.AA01' } };
+    if (url === canonical) return { status: 200, data: viewer('Gallery title', 'luna') };
+    assert.fail(`Unexpected request to ${url}`);
+  });
+
+  const images = await chevereto.fetchRandomImages(1);
+  assert.equal(images.length, 1);
+  assert.equal(images[0].url_viewer, canonical);
+  assert.equal(images[0].user.username, 'luna');
+  assert.deepEqual(request.mock.calls.map(call => call.arguments[0]), [random, random, original, canonical]);
+  assert.ok(request.mock.calls.every(call => call.arguments[1].maxRedirects === 0));
+});
+
+test('image downloads allow a configured CDN and check its redirect destinations', async t => {
+  const photoUrl = `${base}/images/photo.png`;
+  const cdnUrl = `${mediaOrigin}/photo.png`;
+  const restrictedUrl = `${mediaOrigin}/moved.png`;
+  const request = t.mock.method(axios, 'get', async url => {
+    if (url === photoUrl) return { status: 302, headers: { location: cdnUrl } };
+    if (url === cdnUrl) return {
+      status: 200, data: Buffer.from('fixture image'), headers: { 'content-type': 'image/png' },
+    };
+    if (url === restrictedUrl) return {
+      status: 302, headers: { location: 'https://unconfigured.example.test/photo.png' },
+    };
+    assert.fail(`Unexpected request to ${url}`);
+  });
+  assert.equal((await chevereto.downloadImage({ url: photoUrl })).mimeType, 'image/png');
+  await assert.rejects(chevereto.downloadImage({ url: restrictedUrl }), /outside the configured/);
+  assert.deepEqual(request.mock.calls.map(call => call.arguments[0]), [photoUrl, cdnUrl, restrictedUrl]);
+});
 
 test('random uploads credit the actual profiles, skip opted-out and unidentified owners, and keep real titles', async t => {
   const posted = mockPosting(t);
@@ -345,4 +389,60 @@ test('legacy world totals survive the first backfill and older photos can be add
 
   assert.equal((await worldstats.runBackfill()).worldHits, 1);
   assert.equal(worldstats.getPublicData().worlds[0].totalPhotos, 5);
+});
+
+test('OIDC dashboard sessions require a CSRF token for edits and logout', async t => {
+  const settings = {
+    OIDC_ISSUER_URL: 'https://identity.example.test',
+    OIDC_CLIENT_ID: 'fixture',
+    OIDC_CLIENT_SECRET: 'fixture',
+    OIDC_REDIRECT_URI: 'http://localhost/auth/callback',
+  };
+  const previous = Object.fromEntries(Object.keys(settings).map(key => [key, process.env[key]]));
+  Object.assign(process.env, settings);
+  t.after(() => {
+    for (const [key, value] of Object.entries(previous)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  });
+  t.mock.method(Issuer, 'discover', async () => ({
+    issuer: settings.OIDC_ISSUER_URL,
+    Client: class {
+      authorizationUrl({ state }) {
+        return settings.OIDC_ISSUER_URL + '/authorize?' + new URLSearchParams({ state });
+      }
+      callbackParams(req) { return req.query; }
+      async callback(_redirect, params, checks) {
+        assert.equal(params.state, checks.state);
+        return { claims: () => ({ email: 'admin@example.test' }) };
+      }
+    },
+  }));
+
+  const server = await dashboard.startDashboard();
+  t.after(() => new Promise(resolve => server.close(resolve)));
+  const app = `http://127.0.0.1:${server.address().port}`;
+  const login = await fetch(app + '/auth/login', { redirect: 'manual' });
+  const state = new URL(login.headers.get('location')).searchParams.get('state');
+  const pendingCookie = login.headers.get('set-cookie').split(';', 1)[0];
+  const callback = await fetch(app + '/auth/callback?' + new URLSearchParams({ state }), {
+    redirect: 'manual', headers: { cookie: pendingCookie },
+  });
+  assert.equal(callback.headers.get('location'), '/');
+  const cookie = callback.headers.get('set-cookie').split(';', 1)[0];
+  const config = await fetch(app + '/api/auth/config', { headers: { cookie } });
+  assert.equal(config.headers.get('cache-control'), 'no-store');
+  const { sessionAuth, csrfToken } = await config.json();
+  assert.equal(sessionAuth, true);
+  assert.match(csrfToken, /^[0-9a-f]{64}$/);
+
+  const blocked = await fetch(app + '/api/stop', { method: 'POST', headers: { cookie } });
+  assert.equal(blocked.status, 403);
+  assert.equal(stateIO.load().running, true);
+  const headers = { cookie, 'x-csrf-token': csrfToken };
+  assert.equal((await fetch(app + '/api/stop', { method: 'POST', headers })).status, 200);
+  assert.equal(stateIO.load().running, false);
+  assert.equal((await fetch(app + '/auth/logout', { method: 'POST', headers: { cookie } })).status, 403);
+  assert.equal((await fetch(app + '/auth/logout', { method: 'POST', headers })).status, 200);
 });

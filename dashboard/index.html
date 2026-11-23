@@ -524,6 +524,7 @@
 
 <script>
   let SECRET = '';
+  let csrfToken = '';
   let isAuthenticated = false;
   let pollInterval;
   const TIMEOUT = 8000;
@@ -569,6 +570,7 @@
     try {
       const headers = { 'Content-Type': 'application/json' };
       if (SECRET) headers['x-dashboard-secret'] = SECRET;
+      if (csrfToken && method !== 'GET') headers['x-csrf-token'] = csrfToken;
       const res = await fetch(path, {
         method, signal: ctrl.signal, headers,
         credentials: 'same-origin',
@@ -587,6 +589,7 @@
   async function initAuth() {
     const cfg = await apiFetch('/api/auth/config').catch(() => null);
     if (!cfg) { showSecretPanel(); return; }
+    csrfToken = cfg.csrfToken || '';
     if (cfg.sessionAuth && cfg.user) { setSessionAuthenticated(cfg.user); return; }
     if (cfg.oidcEnabled) showOIDCPanel(cfg);
     else showSecretPanel();
