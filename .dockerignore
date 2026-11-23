@@ -2,8 +2,10 @@ node_modules
 data
 bot-state.json
 world-stats.json
-bot.log
+*.log
+kutt-cache.json
 .env
+.env.*
 *.md
 .git
 .gitignore

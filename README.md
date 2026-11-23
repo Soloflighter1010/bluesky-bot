@@ -81,14 +81,29 @@ docker compose up -d
 Docker builds the image and starts the bot in the background. It runs
 its first scheduled cycle at the next top of the hour. Use **Post Now** in the dashboard to post sooner.
 
+### Deploy from GitHub Container Registry
+
+GitHub Actions tests the image and publishes it from `main` as `ghcr.io/soloflighter1010/bluesky-bot:latest` for Linux AMD64 and ARM64. Each published commit also gets a `sha-<full commit SHA>` tag.
+
+Put `docker-compose.yml`, `docker-compose.ghcr.yml`, and `.env` in the same directory on the deployment host. When switching an existing deployment, use its current Compose project directory and `.env` so Compose keeps using the same storage. If the package is private, run `docker login ghcr.io` with a GitHub account that can read the package and use a classic personal access token with `read:packages` as the password. [GitHub Container Registry authentication](https://docs.github.com/en/packages/working-with-a-github-packages-registry/working-with-the-container-registry#authenticating-to-the-container-registry)
+
+With a current Docker Compose v2 release, pull the image and start both services with the same overlay:
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.ghcr.yml pull
+docker compose -f docker-compose.yml -f docker-compose.ghcr.yml up -d
+```
+
+Run the same commands when updating. Set `PHOTOBOT_IMAGE` in `.env` to a specific tag or digest to pin a version. Keep your existing `PHOTOBOT_DATA_DIR` and `CHEVERETO_MEDIA_ORIGINS` values when switching to the registry image.
+
 ---
 
 ## Day-to-Day Commands
 
 ```bash
-docker compose up -d        # start the bot
+docker compose up -d        # start the bot or apply .env changes
 docker compose down         # stop the bot
-docker compose restart      # restart after editing .env
+docker compose restart      # restart the running containers
 docker compose logs -f      # watch live logs
 ```
 
