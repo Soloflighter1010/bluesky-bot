@@ -34,7 +34,7 @@ function renderTemplate(tpl, vars) {
 }
 
 // Chevereto sometimes uses the upload filename as the image title.
-const RAW_SCREENSHOT = /^VRChat_\d{4}-\d{2}-\d{2}_[\d.-]+_\d+x\d+/i;
+const RAW_SCREENSHOT = /^VRChat[ _-]+\d{4}[ _-]\d{2}[ _-]\d{2}[ _-]+\d{2}[ :_-]\d{2}[ :_-]\d{2}(?:\.\d+)?[ _-]+\d+x\d+(?:\.[a-z0-9]+)?$/i;
 const IMAGE_FILENAME = /\.(?:avif|bmp|gif|heic|jpeg|jpg|png|tiff?|webp)(?:$|\s+[|–—-]\s+)/i;
 const CAMERA_FILENAME = /^(?:capture|dscf?|img|pxl|screenshot)[ _-]?\d[\w-]*$/i;
 
