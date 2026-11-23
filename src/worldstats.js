@@ -14,10 +14,8 @@
  *      before this feature existed. See parseWorldBlocks() for the format
  *      this expects (matches buildVrcxReplyText's default template output).
  *
- * Both paths converge on the same on-disk shape and the same
- * lastSyncedPostUri cursor, so re-running a backfill after live posts have
- * already happened won't double-count anything — it just fills in
- * whatever's older than the cursor.
+ * Live and historical writes share a ledger of counted root post URIs.
+ * Only the historical scan advances the backfill checkpoint.
  *
  * World tags (see vrchat.js) are fetched once per world, the first time
  * it's ever recorded (live or via backfill), and cached forever — never
@@ -29,37 +27,52 @@ const path   = require('path');
 const logger = require('./logger');
 const bsky   = require('./bluesky');
 const vrchat = require('./vrchat');
+const { writeJSON } = require('./jsonfile');
 
 const STATS_FILE = process.env.WORLD_STATS_FILE || path.join(__dirname, '..', 'world-stats.json');
 
 const DEFAULT_DATA = {
   worlds: {},            // worldId -> { worldId, worldName, worldUrl, totalPhotos, photographers: {name: count}, tags, tagsFetchedAt, firstSeen, lastSeen }
   lastBackfillAt: null,
-  lastSyncedPostUri: null,
+  lastBackfillPostUri: null,
+  countedPostUris: {},
+  legacyWorldRanges: {},
 };
 
 // ─── Storage ────────────────────────────────────────────────────────────────
 
 function load() {
   try {
-    if (fs.existsSync(STATS_FILE)) {
-      const saved = JSON.parse(fs.readFileSync(STATS_FILE, 'utf8'));
-      return { ...DEFAULT_DATA, ...saved, worlds: saved.worlds ?? {} };
-    }
+    const saved = JSON.parse(fs.readFileSync(STATS_FILE, 'utf8'));
+    const worlds = saved.worlds ?? {};
+    const { lastSyncedPostUri, ...data } = saved;
+    // Older files kept totals without post IDs. Preserve those totals and use
+    // their date ranges to avoid adding historical photos that may already count.
+    const legacyWorldRanges = saved.legacyWorldRanges ?? Object.fromEntries(
+      Object.entries(worlds).map(([id, world]) => [id, { firstSeen: world.firstSeen, lastSeen: world.lastSeen }]),
+    );
+    const countedPostUris = saved.countedPostUris ?? (lastSyncedPostUri ? { [lastSyncedPostUri]: true } : {});
+    return { ...DEFAULT_DATA, ...data, worlds, legacyWorldRanges, countedPostUris };
   } catch (err) {
-    logger.warn(`worldstats.load: could not read ${STATS_FILE} — starting fresh (${err.message})`);
+    if (err.code !== 'ENOENT') throw err;
+    return structuredClone(DEFAULT_DATA);
   }
-  return JSON.parse(JSON.stringify(DEFAULT_DATA));
 }
 
 function save(data) {
-  const dir = path.dirname(STATS_FILE);
-  try {
-    fs.mkdirSync(dir, { recursive: true });
-    fs.writeFileSync(STATS_FILE, JSON.stringify(data, null, 2));
-  } catch (err) {
-    logger.error(`worldstats.save: could not write ${STATS_FILE} — ${err.message}`);
-  }
+  writeJSON(STATS_FILE, data);
+}
+
+function overlapsLegacyStats(data, worldId, createdAt) {
+  const range = data.legacyWorldRanges[worldId];
+  if (!range) return false;
+  const date = Date.parse(createdAt);
+  const first = Date.parse(range.firstSeen);
+  const last = Date.parse(range.lastSeen);
+  // Legacy live tallies used the time they were recorded, after the root published.
+  const tolerance = 60_000;
+  return !Number.isFinite(date) || !Number.isFinite(first) || !Number.isFinite(last) ||
+    (date >= first - tolerance && date <= last + tolerance);
 }
 
 // ─── Recording (shared by live + backfill) ───────────────────────────────────
@@ -73,7 +86,7 @@ function save(data) {
  * called out clearly in the README; live recording never needs this branch
  * since it always knows exactly who shot which image.
  */
-function addWorldHit(data, { worldId, worldName, worldUrl, count, photographerNames = [], when }) {
+function addWorldHit(data, { worldId, worldName, worldUrl, count, photographerNames = [], photographerCounts, when }) {
   if (!worldId || !count) return;
 
   let entry = data.worlds[worldId];
@@ -94,86 +107,79 @@ function addWorldHit(data, { worldId, worldName, worldUrl, count, photographerNa
   if (when && (!entry.lastSeen || when > entry.lastSeen))  entry.lastSeen  = when;
   if (when && (!entry.firstSeen || when < entry.firstSeen)) entry.firstSeen = when;
 
+  if (photographerCounts) {
+    for (const [name, photos] of photographerCounts) {
+      const previous = Object.hasOwn(entry.photographers, name) ? entry.photographers[name] : 0;
+      entry.photographers = { ...entry.photographers, [name]: previous + photos };
+    }
+    return;
+  }
+
   const names = [...new Set(photographerNames)];
   if (names.length === 1) {
-    entry.photographers[names[0]] = (entry.photographers[names[0]] || 0) + count;
+    const [name] = names;
+    entry.photographers = { ...entry.photographers, [name]: (Object.hasOwn(entry.photographers, name) ? entry.photographers[name] : 0) + count };
   } else if (names.length > 1) {
     const base  = Math.floor(count / names.length);
     const extra = count - base * names.length; // remainder goes to the first-listed
     names.forEach((name, i) => {
       const share = base + (i === 0 ? extra : 0);
-      if (share > 0) entry.photographers[name] = (entry.photographers[name] || 0) + share;
+      if (share > 0) {
+        const previous = Object.hasOwn(entry.photographers, name) ? entry.photographers[name] : 0;
+        entry.photographers = { ...entry.photographers, [name]: previous + share };
+      }
     });
   }
 }
 
-/**
- * Fetch and cache a world's author tags — only if we haven't already tried.
- * A world with genuinely zero author tags is a valid final answer (VRChat
- * requires no minimum tags on upload); tagsFetchedAt gets set either way so
- * we don't keep re-asking VRChat about a world that just doesn't have any.
- * Only a failed *fetch* (network error, exhausted retries) leaves it unset,
- * so a later run can retry.
- *
- * Mutates `data` in place but doesn't save — callers save once per batch
- * of work rather than once per world.
- */
-async function ensureTags(data, worldId) {
-  const entry = data.worlds[worldId];
-  if (!entry || entry.tagsFetchedAt) return;
-
-  const result = await vrchat.fetchWorldTags(worldId);
-  if (result.ok) {
-    entry.tags = result.tags;
-    entry.tagsFetchedAt = new Date().toISOString();
+async function fetchMissingTags(worldIds, delay = 0) {
+  for (const worldId of worldIds) {
+    if (load().worlds[worldId]?.tagsFetchedAt) continue;
+    const result = await vrchat.fetchWorldTags(worldId);
+    if (result.ok) {
+      const latest = load();
+      const entry = latest.worlds[worldId];
+      if (entry && !entry.tagsFetchedAt) {
+        entry.tags = result.tags;
+        entry.tagsFetchedAt = new Date().toISOString();
+        save(latest);
+      }
+    }
+    if (delay) await sleep(delay);
   }
 }
 
-/**
- * Live hook — call right after a successful batch post. Reuses the exact
- * worldGroups Map and downloaded array postBatch already built, so every
- * photographer/world attribution is exact, not parsed.
- *
- * @param {Map}      worldGroups     — worldKey -> { vrcx, nums }, from postBatch
- * @param {Array}    downloaded      — [{ image, blob, buffer }], from postBatch
- * @param {function} resolveDisplay  — (chevUsername) => display handle string
- * @param {string}   postUri         — the just-created root post's AT URI
- */
 async function recordBatch(worldGroups, downloaded, resolveDisplay, postUri) {
-  if (!worldGroups || worldGroups.size === 0) return;
-
+  if (!worldGroups?.size) return;
   const data = load();
-  const now  = new Date().toISOString();
-  const newWorldIds = [];
+  if (postUri && Object.hasOwn(data.countedPostUris, postUri)) return;
+  const now = new Date().toISOString();
+  const worldIds = new Set();
 
   for (const { vrcx, nums } of worldGroups.values()) {
     if (!vrcx?.worldId) continue;
-    const isNew = !data.worlds[vrcx.worldId];
-    const photographerNames = [...new Set(
-      nums.map(n => downloaded[n - 1]?.image?.user?.username).filter(Boolean)
-    )].map(resolveDisplay);
-
+    const photographerCounts = new Map();
+    for (const imageNumber of nums) {
+      const username = downloaded[imageNumber - 1]?.image?.user?.username;
+      if (!username) continue;
+      const display = resolveDisplay(username);
+      photographerCounts.set(display, (photographerCounts.get(display) ?? 0) + 1);
+    }
     addWorldHit(data, {
-      worldId:   vrcx.worldId,
+      worldId: vrcx.worldId,
       worldName: vrcx.worldName,
-      worldUrl:  vrcx.worldUrl,
-      count:     nums.length,
-      photographerNames,
+      worldUrl: vrcx.worldUrl,
+      count: nums.length,
+      photographerCounts,
       when: now,
     });
-    if (isNew) newWorldIds.push(vrcx.worldId);
+    worldIds.add(vrcx.worldId);
   }
 
-  if (postUri) data.lastSyncedPostUri = postUri;
-
-  // Tag fetches only happen for brand-new worlds — most posts revisit
-  // already-known ones, so this rarely adds any real delay to the cycle.
-  for (const worldId of newWorldIds) {
-    await ensureTags(data, worldId);
-  }
-
+  if (postUri) data.countedPostUris[postUri] = true;
   save(data);
-  logger.info(`worldstats: recorded ${worldGroups.size} world(s) from live post${newWorldIds.length ? ` (${newWorldIds.length} new)` : ''}`);
+  fetchMissingTags(worldIds).catch(err => logger.warn(`worldstats: could not save world tags — ${err.message}`));
+  logger.info(`worldstats: recorded ${worldIds.size} world(s) from live post`);
 }
 
 // ─── Historical text parsing ──────────────────────────────────────────────────
@@ -254,82 +260,63 @@ function extractRootPhotographer(rootText) {
 
 // ─── Backfill ─────────────────────────────────────────────────────────────────
 
-/**
- * Walk the bot's own Bluesky history and rebuild world-stats.json from the
- * text of each post's world-info reply thread. Safe to re-run — stops once
- * it reaches lastSyncedPostUri, so it only ever fills in what's new/older
- * than what's already recorded (via a previous backfill or live posts).
- *
- * onProgress(current, total) is optional, for a dashboard progress readout.
- */
 async function runBackfill({ onProgress } = {}) {
-  const data  = load();
+  const initial = load();
   const myDid = await bsky.getMyDid();
+  const roots = await bsky.getMyRootPosts({ stopAtUri: initial.lastBackfillPostUri });
+  logger.info(`worldstats.runBackfill: ${roots.length} historical post(s) to check`);
 
-  logger.info('worldstats.runBackfill: fetching root post list…');
-  const roots = await bsky.getMyRootPosts({ stopAtUri: data.lastSyncedPostUri });
-  logger.info(`worldstats.runBackfill: ${roots.length} post(s) to check`);
-
-  let worldsFound = 0;
-  let postsWithWorlds = 0;
-  const newWorldIds = new Set();
-
-  for (let idx = 0; idx < roots.length; idx++) {
-    const root = roots[idx];
-    if (onProgress) onProgress(idx + 1, roots.length);
-
+  const posts = [];
+  let failed = 0;
+  for (const [index, root] of roots.entries()) {
+    onProgress?.(index + 1, roots.length);
+    if (Object.hasOwn(initial.countedPostUris, root.uri)) continue;
     try {
       const threadText = await bsky.getThreadText(root.uri, myDid);
-      if (!threadText) continue;
-
       const blocks = parseWorldBlocks(threadText);
-      if (blocks.length === 0) continue;
-
-      // Single-photographer fallback: only needed if NONE of this post's
-      // world blocks carried an explicit photographers line.
-      const anyExplicitPhotographers = blocks.some(b => b.photographers.length > 0);
-      const rootPhotographer = anyExplicitPhotographers ? null : extractRootPhotographer(root.text);
-
-      for (const block of blocks) {
-        const names = block.photographers.length > 0
-          ? block.photographers
-          : (rootPhotographer ? [rootPhotographer] : []);
-
-        if (!data.worlds[block.worldId]) newWorldIds.add(block.worldId);
-        addWorldHit(data, {
-          worldId:   block.worldId,
-          worldName: block.worldName,
-          worldUrl:  block.worldUrl,
-          count:     block.count,
-          photographerNames: names,
-          when: root.createdAt,
-        });
-        worldsFound++;
-      }
-      postsWithWorlds++;
+      const rootPhotographer = blocks.some(block => block.photographers.length)
+        ? null : extractRootPhotographer(root.text);
+      posts.push({ root, blocks, rootPhotographer });
     } catch (err) {
-      logger.warn(`worldstats.runBackfill: failed on post ${root.uri} — ${err.message}`);
+      failed++;
+      logger.warn(`worldstats.runBackfill: failed on ${root.uri} — ${err.message}`);
     }
   }
 
-  // Tags for every newly-discovered world, once each, with a small courtesy
-  // delay between calls — this is a background admin action, not
-  // time-sensitive, and VRChat's own docs say their rate limits "must not
-  // be treated as consistent or predictable."
-  if (newWorldIds.size > 0) {
-    logger.info(`worldstats.runBackfill: fetching tags for ${newWorldIds.size} new world(s)…`);
-    for (const worldId of newWorldIds) {
-      await ensureTags(data, worldId);
-      await sleep(300);
+  // A live batch can finish while the history is being fetched.
+  const data = load();
+  let worldHits = 0;
+  let postsWithWorlds = 0;
+  const worldIds = new Set();
+  const newWorldIds = new Set();
+
+  for (const { root, blocks, rootPhotographer } of posts.reverse()) {
+    if (Object.hasOwn(data.countedPostUris, root.uri)) continue;
+    let added = false;
+    for (const block of blocks) {
+      if (overlapsLegacyStats(data, block.worldId, root.createdAt)) continue;
+      if (!data.worlds[block.worldId]) newWorldIds.add(block.worldId);
+      addWorldHit(data, {
+        ...block,
+        photographerNames: block.photographers.length ? block.photographers : [rootPhotographer].filter(Boolean),
+        when: root.createdAt,
+      });
+      worldIds.add(block.worldId);
+      worldHits++;
+      added = true;
     }
+    if (added) postsWithWorlds++;
+    if (blocks.length) data.countedPostUris[root.uri] = true;
   }
 
   data.lastBackfillAt = new Date().toISOString();
-  if (roots.length > 0) data.lastSyncedPostUri = roots[0].uri; // newest-first — roots[0] is the most recent
+  // Keep the checkpoint behind failed thread reads so the next run can retry them.
+  if (!failed && roots.length) data.lastBackfillPostUri = roots[0].uri;
   save(data);
+  await fetchMissingTags(worldIds, 300);
 
-  logger.info(`worldstats.runBackfill: done — ${worldsFound} world hit(s) across ${postsWithWorlds}/${roots.length} post(s), ${newWorldIds.size} new world(s) tagged`);
-  return { postsChecked: roots.length, postsWithWorlds, worldHits: worldsFound, newWorlds: newWorldIds.size };
+  logger.info(`worldstats.runBackfill: ${worldHits} new world hit(s) in ${postsWithWorlds} post(s), ${failed} failed thread read(s)`);
+  return { postsChecked: roots.length, postsWithWorlds, worldHits, newWorlds: newWorldIds.size, failed };
 }
 
 function sleep(ms) { return new Promise(resolve => setTimeout(resolve, ms)); }

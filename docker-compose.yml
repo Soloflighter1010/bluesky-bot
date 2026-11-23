@@ -15,7 +15,7 @@ services:
       - "3001"
 
     volumes:
-      - /media/Sea1/AppData/photobot:/app/data
+      - ${PHOTOBOT_DATA_DIR:-/media/Sea1/AppData/photobot}:/app/data
 
     environment:
       - STATE_FILE=/app/data/bot-state.json
@@ -46,7 +46,7 @@ services:
       - "${DASHBOARD_PORT:-3000}:3000"
 
     volumes:
-      - /media/Sea1/AppData/photobot:/app/data
+      - ${PHOTOBOT_DATA_DIR:-/media/Sea1/AppData/photobot}:/app/data
 
     environment:
       - STATE_FILE=/app/data/bot-state.json

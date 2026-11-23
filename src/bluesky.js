@@ -2,9 +2,10 @@
  * bluesky.js – AT Protocol / Bluesky API wrapper
  */
 
-const { BskyAgent, RichText } = require('@atproto/api');
+const { AppBskyRichtextFacet, BskyAgent, RichText } = require('@atproto/api');
 const sharp  = require('sharp');
 const logger = require('./logger');
+const MAX_POST_IMAGES = 4;
 
 const CHAT_PROXY_DID = 'did:web:api.bsky.chat';
 
@@ -54,6 +55,15 @@ async function withSession(fn) {
 
 function chatAgent() {
   return agent.withProxy('bsky_chat', CHAT_PROXY_DID);
+}
+
+async function resolveFacets(richText) {
+  await richText.detectFacets(agent);
+  // Preserve the visible credit when Bluesky cannot resolve a configured handle.
+  return richText.facets?.map(facet => ({
+    ...facet,
+    features: facet.features.filter(feature => !AppBskyRichtextFacet.isMention(feature) || feature.did),
+  })).filter(facet => facet.features.length);
 }
 
 // ─── Image blob upload ────────────────────────────────────────────────────────
@@ -127,12 +137,16 @@ async function uploadBlob(buffer, mimeType) {
  * If altText is provided it overrides the default (image.title).
  * Returns { uri, cid } of the created post.
  */
-async function postPhotosWithText(entries, text) {
+async function postPhotosWithText(entries, text, canPublish = () => true) {
+  if (!entries.length || entries.length > MAX_POST_IMAGES) {
+    throw new RangeError(`A Bluesky photo post requires 1–${MAX_POST_IMAGES} images`);
+  }
   const rt = new RichText({ text });
   return withSession(async () => {
-    await rt.detectFacets(agent);
+    const facets = await resolveFacets(rt);
+    if (!canPublish()) return null;
 
-    const embedImages = entries.slice(0, 4).map(({ image, blob, altText }) => ({
+    const embedImages = entries.map(({ image, blob, altText }) => ({
       image: blob,
       alt:   (altText || image.title || 'Untitled').slice(0, 300),
     }));
@@ -144,7 +158,7 @@ async function postPhotosWithText(entries, text) {
 
     const res = await agent.post({
       text:      rt.text,
-      facets:    rt.facets,
+      facets,
       embed,
       createdAt: new Date().toISOString(),
     });
@@ -157,8 +171,8 @@ async function postPhotosWithText(entries, text) {
 /**
  * Single-image post — kept for spotlight/album highlight paths.
  */
-async function postPhotoWithText(image, blob, text) {
-  return postPhotosWithText([{ image, blob }], text);
+async function postPhotoWithText(image, blob, text, canPublish) {
+  return postPhotosWithText([{ image, blob }], text, canPublish);
 }
 
 /**
@@ -166,7 +180,7 @@ async function postPhotoWithText(image, blob, text) {
  * When overrideText=true (album highlight case), extraText is the entire post text.
  * When overrideText=false, constructs basic fallback text from image metadata.
  */
-async function postPhoto(image, blob, extraText = '', overrideText = false) {
+async function postPhoto(image, blob, extraText = '', overrideText = false, canPublish) {
   await ensureSession();
 
   let text;
@@ -180,14 +194,15 @@ async function postPhoto(image, blob, extraText = '', overrideText = false) {
   }
   if (text.length > 280) text = text.slice(0, 277) + '…';
 
-  return postPhotoWithText(image, blob, text);
+  return postPhotoWithText(image, blob, text, canPublish);
 }
 
-async function postText(text) {
+async function postText(text, canPublish = () => true) {
   return withSession(async () => {
     const rt = new RichText({ text: text.slice(0, 300) });
-    await rt.detectFacets(agent);
-    const res = await agent.post({ text: rt.text, facets: rt.facets, createdAt: new Date().toISOString() });
+    const facets = await resolveFacets(rt);
+    if (!canPublish()) return null;
+    const res = await agent.post({ text: rt.text, facets, createdAt: new Date().toISOString() });
     logger.info(`Posted announcement: ${text.slice(0, 60)}…`);
     return res;
   });
@@ -207,10 +222,10 @@ async function replyToPost(rootRef, parentRef, text) {
   const parent = (parentRef?.uri && parentRef?.cid) ? parentRef : rootRef;
   return withSession(async () => {
     const rt = new RichText({ text: text.slice(0, 300) });
-    await rt.detectFacets(agent);
+    const facets = await resolveFacets(rt);
     const res = await agent.post({
       text:      rt.text,
-      facets:    rt.facets,
+      facets,
       reply:     { root: rootRef, parent },
       createdAt: new Date().toISOString(),
     });
@@ -286,22 +301,21 @@ async function getMyDid() {
  * Walk the bot's own feed, oldest-relevant-first is NOT how the API works —
  * Bluesky's getAuthorFeed is newest-first, paginated via cursor. This yields
  * root posts only (skips the bot's own reply posts, which show up in the
- * thread instead), stopping once `stopAtUri` is reached (already-processed
- * cursor from a previous backfill/live run) or the feed is exhausted.
+ * thread instead), stopping once `stopAtUri` is reached (from a previous
+ * backfill) or the feed is exhausted.
  *
  * Returns an array of { uri, cid, text, createdAt, images } — oldest posts
  * are naturally excluded once stopAtUri is hit, so callers get "everything
  * newer than last time" on repeat runs.
  */
-async function getMyRootPosts({ stopAtUri = null, maxPages = 50 } = {}) {
+async function getMyRootPosts({ stopAtUri = null } = {}) {
   const did = await getMyDid();
   const posts = [];
   let cursor;
-  let pages = 0;
+  const cursors = new Set();
   let hitStop = false;
 
-  while (pages < maxPages && !hitStop) {
-    pages++;
+  while (!hitStop) {
     const page = await withSession(async () => {
       const { data } = await agent.getAuthorFeed({
         actor: did,
@@ -330,6 +344,8 @@ async function getMyRootPosts({ stopAtUri = null, maxPages = 50 } = {}) {
 
     cursor = page.cursor;
     if (!cursor || !page.feed?.length) break;
+    if (cursors.has(cursor)) throw new Error('Bluesky returned a repeated feed cursor');
+    cursors.add(cursor);
   }
 
   return posts;
@@ -366,6 +382,7 @@ async function getThreadText(rootUri, myDid) {
 }
 
 module.exports = {
+  MAX_POST_IMAGES,
   login, postPhoto, postPhotoWithText, postPhotosWithText, postText,
   replyToPost, uploadBlob, pollDMs, replyDM, resolveHandle,
   getMyDid, getMyRootPosts, getThreadText,

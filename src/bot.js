@@ -64,9 +64,13 @@ async function main() {
 
     // Trigger an immediate posting cycle
     if (req.method === 'POST' && req.url === '/internal/post-now') {
-      Promise.resolve(postNow(true)).catch(err =>
-        logger.error(`internal post-now: unhandled error — ${err.message}\n${err.stack}`)
-      );
+      try {
+        const { started, reason } = postNow(true);
+        if (!started) return send(409, { error: reason });
+      } catch (err) {
+        logger.error(`Could not start a posting cycle: ${err.message}`);
+        return send(500, { error: 'Could not start posting cycle' });
+      }
       logger.info('Internal API: manual post triggered');
       return send(200, { ok: true, message: 'Batch triggered (30 s stagger)' });
     }

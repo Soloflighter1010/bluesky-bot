@@ -24,7 +24,10 @@
  */
 
 const express     = require('express');
+const fs          = require('node:fs');
+const { once }    = require('node:events');
 const session     = require('express-session');
+const { rateLimit } = require('express-rate-limit');
 const path        = require('path');
 const crypto      = require('crypto');
 const axios       = require('axios');
@@ -38,7 +41,9 @@ const membershipdrafts = require('./membershipdrafts');
 const { SESSION_SECRET } = require('./secrets');
 
 const PORT   = parseInt(process.env.DASHBOARD_PORT || '3000', 10);
-const SECRET = (process.env.DASHBOARD_SECRET || 'change_me').trim();
+const configuredSecret = (process.env.DASHBOARD_SECRET || '').trim();
+const SECRET = ['', 'change_me', 'replace-with-a-long-random-string'].includes(configuredSecret)
+  ? null : Buffer.from(configuredSecret);
 
 // Internal API coordinates for the bot worker container.
 // In Docker these are set via docker-compose environment; in local dev both
@@ -66,26 +71,17 @@ function isEmailAllowed(email) {
   );
 }
 
-// ── Rate limiter (no extra dependency) ────────────────────────────────────────
-function makeRateLimiter({ windowMs, max }) {
-  const hits = new Map();
-  return function rateLimiter(req, res, next) {
-    const ip  = req.ip || req.socket?.remoteAddress || 'unknown';
-    const now = Date.now();
-    const windowStart = now - windowMs;
-    const times = (hits.get(ip) || []).filter(t => t > windowStart);
-    times.push(now);
-    hits.set(ip, times);
-    if (times.length > max) {
-      logger.warn(`Rate limit exceeded for ${ip} on ${req.path}`);
-      return res.status(429).json({ error: 'Too many requests' });
-    }
-    next();
-  };
+function hasDashboardSecret(req) {
+  const provided = Buffer.from((req.get('x-dashboard-secret') || '').trim());
+  return SECRET && provided.length === SECRET.length && crypto.timingSafeEqual(provided, SECRET);
 }
 
-const authRateLimit = makeRateLimiter({ windowMs: 15 * 60_000, max: 20  });
-const generalLimit  = makeRateLimiter({ windowMs: 60_000,       max: 120 });
+function verifyCsrfToken(expected, received) {
+  if (typeof expected !== 'string' || typeof received !== 'string') return false;
+  const a = Buffer.from(expected);
+  const b = Buffer.from(received);
+  return a.length === b.length && crypto.timingSafeEqual(a, b);
+}
 
 // ── OIDC client (initialised async; null if not configured) ───────────────────
 let oidcClient     = null;
@@ -131,20 +127,19 @@ async function initOIDC() {
 
 // ── Main dashboard startup ─────────────────────────────────────────────────────
 async function startDashboard() {
-  // Load state from the shared volume. The bot worker writes to this file
-  // during every posting cycle; we refresh every 5 s so the dashboard stays
-  // in sync without any process-to-process coordination beyond the file.
-  let state = stateIO.load();
-  setInterval(() => {
-    try { state = stateIO.load(); } catch { /* keep last good state */ }
-  }, 5_000);
-
-  // Initialise OIDC before binding routes so oidcClient is ready
   await initOIDC();
+  if (!SECRET && !oidcClient) {
+    throw new Error('Set a unique DASHBOARD_SECRET or configure working OIDC before starting the dashboard');
+  }
 
   const app = express();
+  // Trust the first proxy hop for client IPs and secure cookies.
+  if (process.env.TRUST_PROXY === 'true') app.set('trust proxy', 1);
+
+  const limitOptions = { message: { error: 'Too many requests' }, legacyHeaders: false, standardHeaders: 'draft-8' };
+  const authRateLimit = rateLimit({ ...limitOptions, windowMs: 15 * 60_000, limit: 20 });
+  app.use(rateLimit({ ...limitOptions, windowMs: 60_000, limit: 120 }));
   app.use(express.json());
-  app.use(generalLimit);
 
   // ── Session middleware ────────────────────────────────────────────────────────
   app.use(session({
@@ -162,23 +157,22 @@ async function startDashboard() {
     },
   }));
 
-  // Trust the first proxy hop (needed for req.ip and secure cookies behind nginx/Caddy)
-  if (process.env.TRUST_PROXY === 'true') app.set('trust proxy', 1);
+  app.use(function protectSessionWrites(req, res, next) {
+    if (['GET', 'HEAD', 'OPTIONS'].includes(req.method)) return next();
+    // Shared-secret clients supply their credentials on each request.
+    if (!req.session?.authenticated || hasDashboardSecret(req)) return next();
+    if (!verifyCsrfToken(req.session.csrfToken, req.get('x-csrf-token'))) {
+      return res.status(403).json({ error: 'Invalid CSRF token. Reload the dashboard and try again.' });
+    }
+    next();
+  });
 
   app.use(express.static(path.join(__dirname, '..', 'dashboard'), { extensions: ['html'] }));
 
   // ── Auth middleware ───────────────────────────────────────────────────────────
   // Accepts either a valid session (OIDC) or the x-dashboard-secret header.
   function requireAuth(req, res, next) {
-    // 1. Session auth (OIDC login)
-    if (req.session?.authenticated === true) return next();
-
-    // 2. Header auth (shared secret)
-    const incoming = (req.headers['x-dashboard-secret'] || '').trim();
-    const valid = incoming.length > 0 &&
-      incoming.length === SECRET.length &&
-      crypto.timingSafeEqual(Buffer.from(incoming), Buffer.from(SECRET));
-    if (valid) return next();
+    if (req.session?.authenticated === true || hasDashboardSecret(req)) return next();
 
     logger.warn(`Dashboard: auth failed from ${req.ip} on ${req.path}`);
     res.status(401).json({ error: 'Unauthorized' });
@@ -262,7 +256,7 @@ async function startDashboard() {
   });
 
   // POST /auth/logout — destroy session and optionally end IdP session
-  app.post('/auth/logout', (req, res) => {
+  app.post('/auth/logout', requireAuth, (req, res) => {
     const user = req.session?.user;
     req.session.destroy(err => {
       if (err) logger.warn(`OIDC: session destroy error — ${err.message}`);
@@ -286,12 +280,15 @@ async function startDashboard() {
   // ── Auth config (public) ──────────────────────────────────────────────────────
   // Called by the dashboard on load to decide which auth UI to show.
   app.get('/api/auth/config', (req, res) => {
+    const sessionAuth = req.session?.authenticated === true;
+    if (sessionAuth) req.session.csrfToken ??= crypto.randomBytes(32).toString('hex');
+    res.set('Cache-Control', 'no-store');
     res.json({
       oidcEnabled:   !!oidcClient,
-      sessionAuth:   req.session?.authenticated === true,
+      sessionAuth,
       user:          req.session?.user ?? null,
-      // Let the UI know if the secret fallback is still meaningful
-      secretEnabled: SECRET !== 'change_me',
+      secretEnabled: !!SECRET,
+      csrfToken:     sessionAuth ? req.session.csrfToken : null,
     });
   });
 
@@ -300,6 +297,7 @@ async function startDashboard() {
 
   // ── Status (public — health check endpoint also used by Docker) ──────────────
   app.get('/api/status', (req, res) => {
+    const state = stateIO.load();
     res.json({
       running:      state.running,
       totalPosted:  state.stats.totalPosted,
@@ -315,7 +313,8 @@ async function startDashboard() {
   // Returns the last N lines of the Winston log file so the dashboard can show
   // real posting activity rather than just client-side action events.
   app.get('/api/logs', requireAuth, (req, res) => {
-    const tail = Math.min(parseInt(req.query.tail || '300', 10), 1000);
+    const requestedTail = Number(req.query.tail ?? 300);
+    const tail = Number.isInteger(requestedTail) && requestedTail > 0 ? Math.min(requestedTail, 1000) : 300;
     const logFile = process.env.LOG_FILE || path.join(__dirname, '..', 'bot.log');
     try {
       if (!fs.existsSync(logFile)) return res.json({ lines: [] });
@@ -336,22 +335,22 @@ async function startDashboard() {
 
   // ── Queue ─────────────────────────────────────────────────────────────────────
   app.get('/api/queue', requireAuth, (req, res) => {
-    res.json({ queue: state.highlights });
+    res.json({ queue: stateIO.load().highlights });
   });
 
   // ── Spotlight history ─────────────────────────────────────────────────────────
   app.get('/api/spotlight-history', requireAuth, (req, res) => {
-    res.json({ history: state.spotlightHistory ?? [] });
+    res.json({ history: stateIO.load().spotlightHistory ?? [] });
   });
 
   // ── User mappings ─────────────────────────────────────────────────────────────
   // Maps Chevereto usernames → per-platform handles { bluesky, twitter, instagram }
   app.get('/api/user-mappings', requireAuth, (req, res) => {
-    res.json({ mappings: state.userMappings ?? {} });
+    res.json({ mappings: stateIO.load().userMappings });
   });
 
-  app.post('/api/user-mappings', requireAuth, (req, res) => {
-    const { cheveretoUsername, bluesky = '', twitter = '', instagram = '' } = req.body;
+  app.post('/api/user-mappings', requireAuth, async (req, res) => {
+    const { cheveretoUsername, bluesky = '', twitter = '', instagram = '' } = req.body ?? {};
     if (!cheveretoUsername?.trim())
       return res.status(400).json({ error: 'cheveretoUsername required' });
     if (!bluesky && !twitter && !instagram)
@@ -364,95 +363,100 @@ async function startDashboard() {
     if (bskyH && !bskyH.includes('.'))
       return res.status(400).json({ error: 'Bluesky handle must include domain, e.g. user.bsky.social' });
 
-    state.userMappings       = state.userMappings ?? {};
-    state.userMappings[chev] = {
+    const mapping = {
       bluesky:   bskyH,
       twitter:   twitter.trim().replace(/^@/, ''),
       instagram: instagram.trim().replace(/^@/, ''),
     };
-    stateIO.save(state);
-    logger.info(`Dashboard: mapped @${chev} → bluesky:${bskyH} twitter:${state.userMappings[chev].twitter} instagram:${state.userMappings[chev].instagram}`);
-    res.json({ ok: true, mappings: state.userMappings });
+    const mappings = await stateIO.update(state => {
+      state.userMappings = { ...state.userMappings, [chev]: mapping };
+      return state.userMappings;
+    });
+    logger.info(`Dashboard: mapped @${chev} → bluesky:${bskyH} twitter:${mapping.twitter} instagram:${mapping.instagram}`);
+    res.json({ ok: true, mappings });
   });
 
-  app.delete('/api/user-mappings/:username', requireAuth, (req, res) => {
+  app.delete('/api/user-mappings/:username', requireAuth, async (req, res) => {
     const chev = req.params.username;
-    state.userMappings = state.userMappings ?? {};
-    delete state.userMappings[chev];
-    stateIO.save(state);
+    const mappings = await stateIO.update(state => {
+      delete state.userMappings[chev];
+      return state.userMappings;
+    });
     logger.info(`Dashboard: removed mapping for @${chev}`);
-    res.json({ ok: true, mappings: state.userMappings });
+    res.json({ ok: true, mappings });
   });
 
   // ── Tags ──────────────────────────────────────────────────────────────────────
   app.get('/api/tags', requireAuth, (req, res) => {
-    res.json({ tags: state.customTags ?? [] });
+    res.json({ tags: stateIO.load().customTags });
   });
 
-  app.post('/api/tags', requireAuth, (req, res) => {
-    const { tags } = req.body;
+  app.post('/api/tags', requireAuth, async (req, res) => {
+    const { tags } = req.body ?? {};
     if (!Array.isArray(tags)) return res.status(400).json({ error: 'tags must be an array' });
-    state.customTags = tags.map(t => t.trim()).filter(Boolean)
+    const customTags = tags.filter(t => typeof t === 'string').map(t => t.trim()).filter(Boolean)
       .map(t => t.startsWith('#') ? t : `#${t}`).slice(0, 20);
-    stateIO.save(state);
-    logger.info(`Dashboard: tags updated — ${state.customTags.join(' ')}`);
-    res.json({ ok: true, tags: state.customTags });
+    await stateIO.update(state => { state.customTags = customTags; });
+    logger.info(`Dashboard: tags updated — ${customTags.join(' ')}`);
+    res.json({ ok: true, tags: customTags });
   });
 
   // ── Templates ─────────────────────────────────────────────────────────────────
   app.get('/api/templates', requireAuth, (req, res) => {
-    res.json({ templates: state.templates });
+    res.json({ templates: stateIO.load().templates });
   });
 
-  app.post('/api/templates', requireAuth, (req, res) => {
-    const { templates } = req.body;
+  app.post('/api/templates', requireAuth, async (req, res) => {
+    const { templates } = req.body ?? {};
     if (!templates || typeof templates !== 'object')
       return res.status(400).json({ error: 'templates object required' });
     const allowed = ['regularPost', 'albumHighlight', 'memberSpotlight', 'vrcxReply', 'patreonPost', 'kofiPost', 'patreonWeekly', 'kofiWeekly', 'patreonMonthly', 'kofiMonthly'];
-    for (const key of allowed) {
-      if (typeof templates[key] === 'string') state.templates[key] = templates[key];
-    }
-    stateIO.save(state);
+    const saved = await stateIO.update(state => {
+      for (const key of allowed) {
+        if (typeof templates[key] === 'string') state.templates[key] = templates[key];
+      }
+      return state.templates;
+    });
     logger.info('Dashboard: templates updated');
-    res.json({ ok: true, templates: state.templates });
+    res.json({ ok: true, templates: saved });
   });
 
   // ── Start / Stop ──────────────────────────────────────────────────────────────
-  app.post('/api/start', requireAuth, (req, res) => {
-    state.running = true; stateIO.save(state);
+  app.post('/api/start', requireAuth, async (req, res) => {
+    await stateIO.update(state => { state.running = true; });
     logger.info('Dashboard: bot started');
     res.json({ ok: true, running: true });
   });
 
-  app.post('/api/stop', requireAuth, (req, res) => {
-    state.running = false; stateIO.save(state);
+  app.post('/api/stop', requireAuth, async (req, res) => {
+    await stateIO.update(state => { state.running = false; });
     logger.info('Dashboard: bot paused');
     res.json({ ok: true, running: false });
   });
 
   // ── Random mode ───────────────────────────────────────────────────────────────
   app.get('/api/random-mode', requireAuth, (req, res) => {
-    res.json({ randomMode: state.randomMode ?? false });
+    res.json({ randomMode: stateIO.load().randomMode });
   });
 
-  app.post('/api/random-mode', requireAuth, (req, res) => {
-    const { randomMode } = req.body;
+  app.post('/api/random-mode', requireAuth, async (req, res) => {
+    const { randomMode } = req.body ?? {};
     if (typeof randomMode !== 'boolean')
       return res.status(400).json({ error: 'randomMode must be a boolean' });
-    state.randomMode = randomMode;
-    stateIO.save(state);
+    await stateIO.update(state => { state.randomMode = randomMode; });
     logger.info(`Dashboard: selection mode → ${randomMode ? 'full random' : 'recency biased'}`);
-    res.json({ ok: true, randomMode: state.randomMode });
+    res.json({ ok: true, randomMode });
   });
 
   // ── Post now ──────────────────────────────────────────────────────────────────
   // Proxied to the bot worker — posting requires its live Bluesky session.
   app.post('/api/post-now', requireAuth, async (req, res) => {
     try {
-      await axios.post(`${BOT_INTERNAL_URL}/internal/post-now`, {}, { timeout: 8_000 });
+      const { status, data } = await axios.post(`${BOT_INTERNAL_URL}/internal/post-now`, {}, { timeout: 8_000 });
       logger.info('Dashboard: manual post triggered via bot worker');
-      res.json({ ok: true, message: 'Batch triggered (30 s stagger)' });
+      res.status(status).json(data);
     } catch (err) {
+      if (err.response?.status === 409) return res.status(409).json(err.response.data);
       logger.warn(`Dashboard: post-now proxy failed — ${err.message}`);
       res.status(502).json({ error: `Could not reach bot worker: ${err.message}` });
     }
@@ -460,28 +464,29 @@ async function startDashboard() {
 
   // ── Album highlight ───────────────────────────────────────────────────────────
   app.post('/api/highlight', requireAuth, async (req, res) => {
-    const { albumId } = req.body;
+    const { albumId } = req.body ?? {};
     if (!albumId) return res.status(400).json({ error: 'albumId required' });
     try {
       const album = await chevereto.fetchAlbum(albumId);
       if (!album) return res.status(404).json({ error: `Album not found for: ${albumId}` });
       const rawImages = await chevereto.fetchAlbumImages(albumId);
-      const excludedUsernames = stateIO.getExcludedUsernameSet(state);
-      const images = chevereto.filterExcludedUsers(rawImages, excludedUsernames);
-      if (rawImages.length > 0 && images.length === 0) {
+      const queue = await stateIO.update(state => {
+        const images = chevereto.filterExcludedUsers(rawImages, stateIO.getExcludedUsernameSet(state));
+        if (rawImages.length && !images.length) return null;
+        return stateIO.enqueueHighlight(state, { type: 'album', albumId, title: album.name, coverImage: images[0] ?? null });
+      });
+      if (queue === null) {
         return res.status(403).json({ error: 'This album is entirely from a photographer who has opted out of auto-posting' });
       }
-      state.highlights.push({ type: 'album', albumId, title: album.name, coverImage: images[0] ?? null, queuedAt: new Date().toISOString() });
-      stateIO.save(state);
-      res.json({ ok: true, album: album.name, queue: state.highlights.length });
+      res.json({ ok: true, album: album.name, queue });
     } catch (err) { res.status(500).json({ error: err.message }); }
   });
 
   // ── Member spotlight ──────────────────────────────────────────────────────────
   app.post('/api/spotlight', requireAuth, async (req, res) => {
-    const { username } = req.body;
+    const { username } = req.body ?? {};
     if (!username) return res.status(400).json({ error: 'username required' });
-    if (stateIO.isExcluded(state, username)) {
+    if (stateIO.isExcluded(stateIO.load(), username)) {
       return res.status(403).json({ error: `@${username} has opted out of auto-posting` });
     }
     try {
@@ -489,9 +494,12 @@ async function startDashboard() {
       if (!user) return res.status(404).json({ error: `User not found: ${username}` });
       const images = await chevereto.fetchUserSpotlightImages(username);
       logger.info(`Spotlight queue: fetched ${images.length} representative images for @${username}`);
-      state.highlights.push({ type: 'spotlight', username: user.username, name: user.name ?? user.username, images: images.slice(0, 3), queuedAt: new Date().toISOString() });
-      stateIO.save(state);
-      res.json({ ok: true, user: user.username, imageCount: images.length, queue: state.highlights.length });
+      const queue = await stateIO.update(state => {
+        if (stateIO.isExcluded(state, user.username)) return null;
+        return stateIO.enqueueHighlight(state, { type: 'spotlight', username: user.username, name: user.name ?? user.username, images: images.slice(0, 3) });
+      });
+      if (queue === null) return res.status(403).json({ error: `@${username} has opted out of auto-posting` });
+      res.json({ ok: true, user: user.username, imageCount: images.length, queue });
     } catch (err) { res.status(500).json({ error: err.message }); }
   });
 
@@ -501,11 +509,11 @@ async function startDashboard() {
   // touched or retracted.
 
   app.get('/api/excluded-users', requireAuth, (req, res) => {
-    res.json({ excludedUsers: state.excludedUsers ?? {} });
+    res.json({ excludedUsers: stateIO.load().excludedUsers });
   });
 
-  app.post('/api/excluded-users', requireAuth, (req, res) => {
-    const { username, note, durationDays, permanent } = req.body;
+  app.post('/api/excluded-users', requireAuth, async (req, res) => {
+    const { username, note, durationDays, permanent } = req.body ?? {};
     if (!username?.trim()) return res.status(400).json({ error: 'username required' });
     const key = username.trim().toLowerCase().replace(/^@/, '');
 
@@ -518,8 +526,7 @@ async function startDashboard() {
       expiresAt = new Date(Date.now() + days * 86_400_000).toISOString();
     }
 
-    state.excludedUsers = state.excludedUsers ?? {};
-    state.excludedUsers[key] = {
+    const entry = {
       excludedAt: new Date().toISOString(),
       expiresAt,
       note: (note || '').trim().slice(0, 300),
@@ -529,31 +536,33 @@ async function startDashboard() {
     // albums here (an album highlight doesn't carry a username on the
     // highlight object itself), but postAlbumHighlight re-checks the cover
     // image's uploader defensively at post time regardless.
-    const beforeCount = state.highlights.length;
-    state.highlights = state.highlights.filter(h =>
-      !(h.type === 'spotlight' && h.username?.toLowerCase() === key)
-    );
-    const removedFromQueue = beforeCount - state.highlights.length;
-
-    stateIO.save(state);
+    const { excludedUsers, removedFromQueue } = await stateIO.update(state => {
+      state.excludedUsers = { ...state.excludedUsers, [key]: entry };
+      const beforeCount = state.highlights.length;
+      state.highlights = state.highlights.filter(h =>
+        !(h.type === 'spotlight' && h.username?.toLowerCase() === key)
+      );
+      return { excludedUsers: state.excludedUsers, removedFromQueue: beforeCount - state.highlights.length };
+    });
     logger.info(`Dashboard: excluded @${key} (${expiresAt ? `until ${expiresAt}` : 'permanent'})${removedFromQueue ? ` — removed ${removedFromQueue} queued spotlight(s)` : ''}`);
-    res.json({ ok: true, excludedUsers: state.excludedUsers, removedFromQueue });
+    res.json({ ok: true, excludedUsers, removedFromQueue });
   });
 
-  app.delete('/api/excluded-users/:username', requireAuth, (req, res) => {
+  app.delete('/api/excluded-users/:username', requireAuth, async (req, res) => {
     const key = req.params.username.toLowerCase().replace(/^@/, '');
-    state.excludedUsers = state.excludedUsers ?? {};
-    delete state.excludedUsers[key];
-    stateIO.save(state);
+    const excludedUsers = await stateIO.update(state => {
+      delete state.excludedUsers[key];
+      return state.excludedUsers;
+    });
     logger.info(`Dashboard: removed @${key} from excluded list`);
-    res.json({ ok: true, excludedUsers: state.excludedUsers });
+    res.json({ ok: true, excludedUsers });
   });
 
   // ── Buffer crossposting ───────────────────────────────────────────────────────
 
   // GET /api/buffer — return current config (token is masked)
   app.get('/api/buffer', requireAuth, (req, res) => {
-    const b = state.buffer ?? {};
+    const b = stateIO.load().buffer;
     let tokenDaysRemaining = null;
     if (b.tokenSetAt) {
       const msRemaining = (new Date(b.tokenSetAt).getTime() + 30 * 86_400_000) - Date.now();
@@ -571,16 +580,15 @@ async function startDashboard() {
 
   // POST /api/buffer/token — validate and save a new API token
   app.post('/api/buffer/token', requireAuth, async (req, res) => {
-    const { token } = req.body;
+    const { token } = req.body ?? {};
     if (!token?.trim()) return res.status(400).json({ error: 'token required' });
     try {
       const info = await buffer.validateToken(token.trim());
-      state.buffer           = state.buffer ?? {};
-      state.buffer.token     = token.trim();
-      state.buffer.tokenSetAt = new Date().toISOString();
-      // Clear cached channel selection so user re-picks with the new token
-      state.buffer.channels  = [];
-      stateIO.save(state);
+      await stateIO.update(state => {
+        state.buffer.token = token.trim();
+        state.buffer.tokenSetAt = new Date().toISOString();
+        state.buffer.channels = [];
+      });
       logger.info(`Dashboard: Buffer token saved for ${info.email}`);
       res.json({ ok: true, email: info.email });
     } catch (err) {
@@ -591,7 +599,7 @@ async function startDashboard() {
 
   // GET /api/buffer/channels — fetch channels from Buffer using stored token
   app.get('/api/buffer/channels', requireAuth, async (req, res) => {
-    const token = state.buffer?.token;
+    const token = stateIO.load().buffer.token;
     if (!token) return res.status(400).json({ error: 'No Buffer token configured' });
     try {
       const channels = await buffer.getChannels(token);
@@ -603,27 +611,26 @@ async function startDashboard() {
   });
 
   // POST /api/buffer/config — save enabled flag, selected channel IDs, mode
-  app.post('/api/buffer/config', requireAuth, (req, res) => {
-    const { enabled, channels, mode } = req.body;
-    state.buffer = state.buffer ?? {};
-    if (typeof enabled === 'boolean') state.buffer.enabled = enabled;
-    if (Array.isArray(channels)) {
-      // Accept [{id, service}] objects; filter out anything malformed
-      state.buffer.channels = channels
-        .filter(c => c && typeof c.id === 'string' && typeof c.service === 'string')
-        .map(c => ({ id: c.id, service: c.service }));
-    }
-    if (typeof mode === 'string' && ['addToQueue', 'customScheduled'].includes(mode)) {
-      state.buffer.mode = mode;
-    }
-    stateIO.save(state);
-    logger.info(`Dashboard: Buffer config updated — enabled=${state.buffer.enabled}, channels=${state.buffer.channels.map(c => `${c.service}:${c.id}`).join(',')}, mode=${state.buffer.mode}`);
-    res.json({ ok: true, buffer: { enabled: state.buffer.enabled, channels: state.buffer.channels, mode: state.buffer.mode } });
+  app.post('/api/buffer/config', requireAuth, async (req, res) => {
+    const { enabled, channels, mode } = req.body ?? {};
+    const config = await stateIO.update(state => {
+      if (typeof enabled === 'boolean') state.buffer.enabled = enabled;
+      if (Array.isArray(channels)) {
+        state.buffer.channels = channels
+          .filter(c => c && typeof c.id === 'string' && typeof c.service === 'string')
+          .map(c => ({ id: c.id, service: c.service }));
+      }
+      if (['addToQueue', 'customScheduled'].includes(mode)) state.buffer.mode = mode;
+      const { enabled: savedEnabled, channels: savedChannels, mode: savedMode } = state.buffer;
+      return { enabled: savedEnabled, channels: savedChannels, mode: savedMode };
+    });
+    logger.info(`Dashboard: Buffer config updated — enabled=${config.enabled}, channels=${config.channels.map(c => `${c.service}:${c.id}`).join(',')}, mode=${config.mode}`);
+    res.json({ ok: true, buffer: config });
   });
 
   // POST /api/buffer/test — send a test post to the first configured channel
   app.post('/api/buffer/test', requireAuth, async (req, res) => {
-    const b = state.buffer ?? {};
+    const b = stateIO.load().buffer;
     if (!b.token)              return res.status(400).json({ error: 'No Buffer token configured' });
     if (!b.channels?.length)   return res.status(400).json({ error: 'No channels selected' });
     const { id: channelId, service } = b.channels[0];
@@ -644,9 +651,8 @@ async function startDashboard() {
   });
 
   // ── Clear queue ───────────────────────────────────────────────────────────────
-  app.post('/api/clear-queue', requireAuth, (req, res) => {
-    state.highlights = [];
-    stateIO.save(state);
+  app.post('/api/clear-queue', requireAuth, async (req, res) => {
+    await stateIO.update(state => { state.highlights = []; });
     res.json({ ok: true });
   });
 
@@ -695,27 +701,27 @@ async function startDashboard() {
   // copy-paste aid, not a crosspost queue — see membershipdrafts.js.
 
   app.get('/api/membership-drafts', requireAuth, (req, res) => {
-    res.json({ drafts: state.membershipDrafts ?? [] });
+    res.json({ drafts: stateIO.load().membershipDrafts });
   });
 
   // Read-only progress snapshot — how much has accumulated toward the next
   // weekly/monthly roundup draft. Doesn't trigger a check itself (that only
   // happens from the scheduler cycle); this just reports current totals.
   app.get('/api/membership-drafts/roundup-status', requireAuth, (req, res) => {
-    res.json(membershipdrafts.getRoundupStatus(state));
+    res.json(membershipdrafts.getRoundupStatus(stateIO.load()));
   });
 
   // Generates a preview draft from sample data — neither platform can
   // actually be posted to (see membershipdrafts.js), so this is for
   // checking template output, not a real test post.
   const TEST_DRAFT_TYPES = ['spotlight', 'album', 'weekly', 'monthly'];
-  app.post('/api/membership-drafts/test', requireAuth, (req, res) => {
-    const { type } = req.body;
+  app.post('/api/membership-drafts/test', requireAuth, async (req, res) => {
+    const { type } = req.body ?? {};
     if (!TEST_DRAFT_TYPES.includes(type)) {
       return res.status(400).json({ error: `type must be one of: ${TEST_DRAFT_TYPES.join(', ')}` });
     }
     try {
-      const draft = membershipdrafts.generateTestDraft(state, type);
+      const draft = await stateIO.update(state => membershipdrafts.generateTestDraft(state, type));
       logger.info(`Dashboard: generated test ${type} draft`);
       res.json({ ok: true, draft });
     } catch (err) {
@@ -724,19 +730,23 @@ async function startDashboard() {
     }
   });
 
-  app.delete('/api/membership-drafts/:id', requireAuth, (req, res) => {
-    state.membershipDrafts = (state.membershipDrafts ?? []).filter(d => d.id !== req.params.id);
-    stateIO.save(state);
-    res.json({ ok: true, drafts: state.membershipDrafts });
+  app.delete('/api/membership-drafts/:id', requireAuth, async (req, res) => {
+    const drafts = await stateIO.update(state => {
+      state.membershipDrafts = state.membershipDrafts.filter(d => d.id !== req.params.id);
+      return state.membershipDrafts;
+    });
+    res.json({ ok: true, drafts });
   });
 
-  app.delete('/api/membership-drafts', requireAuth, (req, res) => {
-    state.membershipDrafts = [];
-    stateIO.save(state);
+  app.delete('/api/membership-drafts', requireAuth, async (req, res) => {
+    await stateIO.update(state => { state.membershipDrafts = []; });
     res.json({ ok: true });
   });
 
-  app.listen(PORT, () => logger.info(`Dashboard running at http://localhost:${PORT}`));
+  const server = app.listen(PORT);
+  await once(server, 'listening');
+  logger.info(`Dashboard running at http://localhost:${server.address().port}`);
+  return server;
 }
 
 module.exports = { startDashboard };

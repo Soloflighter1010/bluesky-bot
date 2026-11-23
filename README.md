@@ -24,7 +24,7 @@ and DM-based commands.
 - **OIDC / SSO login** — sign in to the dashboard with Google, Authentik, Keycloak, or any OpenID Connect provider
 - **Buffer crossposting** — queue posts directly to X, Instagram, LinkedIn, Mastodon, and more via Buffer's API — no Make or Zapier required
 - **Membership post drafts** — Patreon & Ko-fi drafts: immediate for spotlights/albums, weekly & monthly photo-count + map-list roundups for regular batches; neither platform's API supports auto-posting, so this is a copy-paste aid, not a crosspost
-- **Persistent state** — history and queue survive container restarts (stored in a Docker-managed named volume)
+- **Persistent state** — history and queue survive container restarts in shared storage
 
 ---
 
@@ -53,24 +53,22 @@ Open `.env` in any text editor and fill in your values.
 | `BLUESKY_APP_PASSWORD` | Generate one at bsky.social → Settings → App Passwords — do not use your real password |
 | `CHEVERETO_BASE_URL` | Your Chevereto site URL, e.g. `https://photos.yourteam.com` |
 | `ADMIN_HANDLES` | Comma-separated Bluesky handles that can send DM commands |
-| `DASHBOARD_SECRET` | A long random string to protect the web dashboard |
-| `SESSION_SECRET` | A separate long random string used to sign session cookies — see note below |
+| `DASHBOARD_SECRET` | A unique, long random string to protect the web dashboard. Required for password login. You can leave it empty if OIDC is working. |
 
 **Optional:**
 
 | Variable | Default | Description |
 |---|---|---|
-| `POSTS_PER_HOUR` | `4` | Number of photos included in each hourly gallery post |
+| `POSTS_PER_HOUR` | `4` | Number of photos per hourly gallery post, from 1 to 4 |
+| `CHEVERETO_MEDIA_ORIGINS` | _(unset)_ | Comma-separated origins for image downloads from a separate CDN or storage host. The Chevereto site origin is included automatically. |
+| `PHOTOBOT_DATA_DIR` | See [Persistent Data](#persistent-data) | Shared named volume or absolute host directory |
+| `SESSION_SECRET` | _(unset)_ | A separate long random string shared by both services. Required for high-resolution Buffer renders. |
 | `RECENCY_BIAS` | `1.5` | Higher = newer photos favoured more strongly (1 = uniform random) |
 | `DASHBOARD_PORT` | `3000` | Port the dashboard is served on |
 | `TRUST_PROXY` | _(unset)_ | Set to `true` when running behind a reverse proxy (nginx, Caddy) — required for secure cookies over HTTPS |
-| `PUBLIC_BASE_URL` | _(unset)_ | Your externally-reachable dashboard URL, e.g. `https://photobot.yourdomain.com`. Required for Twitter/Instagram crossposts to get the high-quality re-rendered image instead of Chevereto's standard thumbnail — see [Image Quality](#image-quality-for-crossposts) below. Safe to leave unset; crossposting just falls back to the standard thumbnail until it's set. |
+| `PUBLIC_BASE_URL` | _(unset)_ | Your externally-reachable dashboard URL, e.g. `https://photobot.yourdomain.com`. Used with a shared `SESSION_SECRET` to enable high-resolution Twitter/Instagram crossposts — see [Image Quality](#image-quality-for-crossposts) below. Safe to leave unset; crossposting just falls back to the standard thumbnail until it's set. |
 | `VRCHAT_API_CONTACT` | _(unset)_ | An email or URL identifying you to VRChat's API, used to fetch each world's tags for the `/worlds` page (e.g. `you@example.com` or `https://yoursite.com`). VRChat requires clients to identify themselves properly — see [World Tags](#world-tags--grouping) below. Safe to leave unset; tag fetching still works but logs a one-time warning, and VRChat may moderate improperly-identified requests. |
 
-> **`SESSION_SECRET`** — if this is not set, the bot auto-generates one at startup and logs a warning.
-> Sessions will be invalidated every time the container restarts. Set a fixed value in `.env` to keep
-> users logged in across restarts.
->
 > **Tip:** Avoid `#` characters in secret values — `#` starts a comment in `.env` files and will
 > silently truncate the value. Use only letters, numbers, and hyphens.
 
@@ -80,8 +78,8 @@ Open `.env` in any text editor and fill in your values.
 docker compose up -d
 ```
 
-Docker builds the image and starts the bot in the background. On first start it runs
-an immediate post cycle so you don't have to wait for the top of the hour.
+Docker builds the image and starts the bot in the background. It runs
+its first scheduled cycle at the next top of the hour. Use **Post Now** in the dashboard to post sooner.
 
 ---
 
@@ -98,42 +96,16 @@ docker compose logs -f      # watch live logs
 
 ## Persistent Data
 
-Everything important is written to a Docker-managed **named volume**
-(`photobot-data`), not a `./data/` folder next to your files and not inside
-the container's writable layer:
+Both containers store their data in `/app/data`. New deployments that copy `.env.example` use the Docker-managed `photobot-data` volume. Existing deployments with no `PHOTOBOT_DATA_DIR` setting keep the bind mount at `/media/Sea1/AppData/photobot`. Set `PHOTOBOT_DATA_DIR` to an absolute host path to use a different directory.
 
-- `bot-state.json` — posted image history, highlight queue, spotlight history, templates
-- `bot.log` — rolling log file (3 × 5 MB)
-- `world-stats.json` — per-world photo counts and photographer breakdown, powering the public `/worlds` page
-
-Rebuilding or updating the container never loses this data — `docker compose
-down` followed by `docker compose up -d` leaves the volume untouched. Only
-`docker compose down -v` (note the `-v`) or an explicit `docker volume rm`
-removes it.
-
-**Why a named volume instead of a bind-mounted `./data` folder:** PhotoBot's
-container runs as root (no `USER` directive in the Dockerfile), so any file
-it writes into a bind-mounted folder is owned by root on the host. That's a
-problem if something else also manages that same directory tree — a GitOps
-sync tool, for instance, staging and promoting a fresh copy of the project
-directory on every deploy can fail (and fail to roll back cleanly) the
-moment it hits a root-owned file it doesn't have permission to touch. A
-named volume is managed entirely by the Docker daemon, physically outside
-the project directory, so nothing else ever has a reason to walk into it.
-
-**Inspecting or backing up the volume:**
+The shared data includes `bot-state.json`, `world-stats.json`, the URL cache, and rotating logs. To back up the files from the active storage location, run this from the Compose project directory:
 
 ```bash
-# Where it actually lives on disk
-docker volume inspect photobot-data
-
-# Copy a file out to look at it
-docker cp photobot:/app/data/bot-state.json ./bot-state.json
-
-# Full backup to a tarball
-docker run --rm -v photobot-data:/data -v "$PWD":/backup alpine \
-  tar czf /backup/photobot-data-backup.tar.gz -C /data .
+mkdir -p photobot-backup
+docker compose cp photobot-worker:/app/data/. ./photobot-backup
 ```
+
+Use the same `PHOTOBOT_DATA_DIR` when updating an existing installation. If you change it, copy the backed-up data into the new location before starting the services.
 
 ---
 
@@ -316,7 +288,7 @@ in the dashboard redirects the browser there to also terminate the IdP session.
 ## Message Templates
 
 Templates use `{variable}` placeholders. Edit them in the dashboard, or directly in
-`bot-state.json` inside the `photobot-data` volume (see [Persistent Data](#persistent-data)
+`bot-state.json` in shared storage (see [Persistent Data](#persistent-data)
 above for how to get a file in or out of it).
 
 | Template | Variables | Used for |
@@ -389,6 +361,10 @@ before the bot started (so restarting the bot doesn't re-run old commands).
 > open a conversation thread. Just send `!help` to get started.
 
 ---
+
+## Random image selection
+
+Random mode follows Chevereto's random viewer redirect and uses the image's uploader profile for photographer credit. Chevereto usernames use the same per-platform handle mappings as recency-based posts. Random mode skips images whose uploader cannot be identified. Captions omit raw image filenames.
 
 ## How Recency Weighting Works
 
@@ -495,14 +471,13 @@ downscaled for fast page loads on the photo site) — noticeably softer than wha
 Bluesky gets, since Bluesky's copy comes from the bot's own upload, compressed
 only as much as its 1MB blob cap actually requires.
 
-With `PUBLIC_BASE_URL` set, Twitter and Instagram now get a purpose-built JPEG
+With `PUBLIC_BASE_URL` and a shared `SESSION_SECRET` set, Twitter and Instagram get a purpose-built JPEG
 instead — resized from the *original* file (long edge capped at 2048px, quality
 88), served from PhotoBot's own `/api/render` endpoint rather than Chevereto's
 thumbnail. Buffer fetches from a signed URL pointing at your own dashboard, which
 re-renders the image on demand; the signature is derived from `SESSION_SECRET`
 (no separate secret to manage) and only ever accepts URLs already hosted on your
-own `CHEVERETO_BASE_URL`. Leave `PUBLIC_BASE_URL` unset and crossposting keeps
-working exactly as before, just without the quality bump.
+own `CHEVERETO_BASE_URL`. When either setting is missing, crossposts use Chevereto thumbnails.
 
 ### Instagram orientation matching
 
@@ -559,9 +534,7 @@ For anything posted *before* this feature existed, there's no structured
 record left — only the reply thread text actually posted to Bluesky. The
 **Rebuild from Bluesky History** button in the dashboard's World Stats section
 walks the bot's own post history and reconstructs that data from the reply
-text instead. This only needs to be run once to backfill the past; re-running
-it later is safe and just fills in anything newer than the last run, so it
-won't double-count posts that live-recording already captured.
+text instead. The historical scan tracks its own checkpoint and skips posts already counted by the worker. Older state files stored per-world totals without individual post IDs. The backfill preserves those totals and skips dates that overlap those older records for the same world, where it cannot reliably tell which posts were already counted.
 
 Backfill accuracy: world names, URLs, and total photo counts per world are
 fully reliable however old the post is. Per-photographer credit is exact for

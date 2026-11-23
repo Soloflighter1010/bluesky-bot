@@ -17,7 +17,10 @@ const membershipdrafts = require('./membershipdrafts');
 const kutt        = require('./kutt');
 const { chunkText } = require('./textchunk');
 
-const POSTS_PER_HOUR    = parseInt(process.env.POSTS_PER_HOUR || '4', 10);
+const configuredBatchSize = Number(process.env.POSTS_PER_HOUR || bsky.MAX_POST_IMAGES);
+const POSTS_PER_HOUR = Number.isInteger(configuredBatchSize) && configuredBatchSize > 0
+  ? Math.min(configuredBatchSize, bsky.MAX_POST_IMAGES)
+  : bsky.MAX_POST_IMAGES;
 const STAGGER_SCHED_MS  = 5 * 60 * 1000;  // 5 min between scheduled posts
 const STAGGER_MANUAL_MS = 30 * 1000;       // 30 s between manual posts
 
@@ -30,11 +33,14 @@ function renderTemplate(tpl, vars) {
   return tpl.replace(/\{(\w+)\}/g, (_, key) => vars[key] ?? '').trim();
 }
 
-// VRChat raw screenshot filename pattern — strip these rather than show them as titles
-const VRC_FILENAME_RE = /^VRChat_\d{4}-\d{2}-\d{2}_[\d-]+\.\d+_\d+x\d+\.png$/i;
+// Chevereto sometimes uses the upload filename as the image title.
+const RAW_SCREENSHOT = /^VRChat_\d{4}-\d{2}-\d{2}_[\d.-]+_\d+x\d+/i;
+const IMAGE_FILENAME = /\.(?:avif|bmp|gif|heic|jpeg|jpg|png|tiff?|webp)(?:$|\s+[|–—-]\s+)/i;
+const CAMERA_FILENAME = /^(?:capture|dscf?|img|pxl|screenshot)[ _-]?\d[\w-]*$/i;
 
-function cleanTitle(title) {
-  if (!title || VRC_FILENAME_RE.test(title.trim())) return '';
+function cleanTitle(image) {
+  const title = image.title?.trim();
+  if (!title || title === 'Untitled' || RAW_SCREENSHOT.test(title) || IMAGE_FILENAME.test(title) || CAMERA_FILENAME.test(title)) return '';
   return title;
 }
 
@@ -57,7 +63,9 @@ function compactText(text) {
  * @param {string} platform   — 'bluesky' | 'twitter' | 'instagram'
  */
 function resolveHandle(chevUser, mappings, platform) {
-  const entry  = mappings[chevUser];
+  const key = Object.hasOwn(mappings, chevUser) ? chevUser :
+    Object.keys(mappings).find(name => name.toLowerCase() === chevUser.toLowerCase());
+  const entry = key ? mappings[key] : undefined;
   if (!entry) {
     // For Bluesky: bare Chevereto usernames are not valid Bluesky handles.
     // Prefixing with @ causes detectFacets to attempt DID resolution, which
@@ -72,12 +80,14 @@ function resolveHandle(chevUser, mappings, platform) {
 }
 
 function buildPostText(images, templates, customTags = [], userMappings = {}, platform = 'bluesky', urlMap = new Map()) {
-  const usernames = [...new Set(
-    images.map(img => img.user?.username).filter(Boolean)
-  )].map(u => resolveHandle(u, userMappings, platform)).join(' ');
+  const credit = new Map();
+  for (const { user } of images) {
+    if (user?.username) credit.set(user.username.toLowerCase(), user.username);
+  }
+  const usernames = [...credit.values()].map(u => resolveHandle(u, userMappings, platform)).join(' ');
 
   const titles = images
-    .map(img => cleanTitle(img.title))
+    .map(cleanTitle)
     .filter(Boolean)
     .slice(0, 2)
     .join(' · ');
@@ -114,214 +124,155 @@ function buildPlatformTexts(images, templates, customTags, userMappings, urlMap 
 // ─── Public API ───────────────────────────────────────────────────────────────
 
 function startScheduler() {
-  cron.schedule('0 * * * *', () => runCycle(false));
-  logger.info(`Scheduler active – ${POSTS_PER_HOUR} posts/hour`);
-  return (manual = true) => runCycle(manual);
+  let activeCycle = null;
+  function trigger(manual = true) {
+    if (activeCycle) return { started: false, reason: 'A posting cycle is already running' };
+    if (manual && !stateIO.load().running) return { started: false, reason: 'The bot is paused' };
+
+    activeCycle = runCycle(manual)
+      .catch(err => logger.error(`Cycle error: ${err.message}\n${err.stack}`))
+      .finally(() => { activeCycle = null; });
+    return { started: true, completion: activeCycle };
+  }
+
+  if (configuredBatchSize !== POSTS_PER_HOUR) {
+    logger.warn(`POSTS_PER_HOUR must be an integer from 1 to ${bsky.MAX_POST_IMAGES}. Using ${POSTS_PER_HOUR}.`);
+  }
+  cron.schedule('0 * * * *', () => trigger(false).completion);
+  logger.info(`Scheduler active – up to ${POSTS_PER_HOUR} photos per batch`);
+  return trigger;
 }
 
-// ─── Main cycle ───────────────────────────────────────────────────────────────
-
-async function runCycle(manual = false) {
-  // Load state fresh from disk on every cycle so dashboard changes (paused,
-  // new exclusions, template edits, etc.) are picked up without a restart.
-  const state = stateIO.load();
-
-  // Checked before the paused/running gate below — a week or month that
-  // already ended shouldn't wait for posting to resume before its roundup
-  // draft gets generated.
-  membershipdrafts.checkRoundups(state);
-
-  // Same reasoning — a temporary exclusion's expiry isn't gated on posting
-  // being active. Not required for correctness (isExcluded/
-  // getExcludedUsernameSet already treat expired entries as inactive on
-  // their own), just keeps the stored list and dashboard from accumulating
-  // stale "expired months ago" rows.
-  const prunedExclusions = stateIO.pruneExpiredExclusions(state);
-  if (prunedExclusions.length > 0) {
-    logger.info(`runCycle: ${prunedExclusions.length} exclusion(s) expired and reverted — ${prunedExclusions.join(', ')}`);
-    stateIO.save(state);
-  }
-
-  if (!state.running) {
-    logger.info('Scheduler: bot is paused, skipping cycle');
-    return;
-  }
+async function runCycle(manual) {
+  const state = await stateIO.update(current => {
+    // Roundups and expired exclusions are maintained even while posting is paused.
+    membershipdrafts.checkRoundups(current);
+    const pruned = stateIO.pruneExpiredExclusions(current);
+    if (pruned.length) logger.info(`Expired exclusions removed: ${pruned.join(', ')}`);
+    if (current.running) current.stats.lastCheckAt = new Date().toISOString();
+    return current;
+  });
+  if (!state.running) return;
 
   const staggerMs = manual ? STAGGER_MANUAL_MS : STAGGER_SCHED_MS;
   logger.info(`runCycle: starting (${manual ? 'manual' : 'scheduled'}, stagger ${staggerMs / 1000}s)`);
+  const recentCache = state.randomMode ? null : await chevereto.fetchRecentImages(5);
+  const latest = stateIO.load();
+  if (!latest.running) return;
 
-  state.stats.lastCheckAt = new Date().toISOString();
-  stateIO.save(state);
-
-  try {
-    // In random mode with no highlights queued, there's no need to scrape
-    // /explore/recent — fetchRandomImages will call /?random directly instead.
-    // (Highlights don't actually consume this cache either — postAlbumHighlight
-    // and postMemberSpotlight fetch their own data — so this only ever depends
-    // on which selection mode is active, not on whether a highlight is queued.)
-    const needsRecentCache = !state.randomMode;
-    logger.info(needsRecentCache
-      ? 'runCycle: pre-fetching recent images for this cycle…'
-      : 'runCycle: random mode active, skipping /explore/recent scrape');
-    const recentCache = needsRecentCache
-      ? await chevereto.fetchRecentImages(5)
-      : [];
-
-    if (state.highlights.length > 0) {
-      // Fix #3: peek, don't shift — only remove on success
-      const highlight = state.highlights[0];
-      logger.info(`Processing highlight: type=${highlight.type}`);
-      try {
-        await postHighlight(highlight, state, staggerMs, recentCache);
-        state.highlights.shift(); // only remove from queue after success
-      } catch (err) {
-        logger.error(`Highlight failed, keeping in queue for retry: ${err.message}`);
-      }
-      stateIO.save(state);
-
-      // Always stagger between the highlight post and the regular batch
-      logger.info(`runCycle: waiting ${staggerMs / 1000}s before batch post…`);
-      await sleep(staggerMs);
+  const highlight = latest.highlights[0];
+  if (highlight) {
+    try {
+      if (await postHighlight(highlight, latest)) await sleep(staggerMs);
+    } catch (err) {
+      logger.error(`Highlight failed: ${err.message}`);
     }
-
-    await postBatch(state, staggerMs, recentCache);
-  } catch (err) {
-    logger.error(`Cycle error: ${err.message}\n${err.stack}`);
   }
+
+  const batchState = stateIO.load();
+  if (batchState.running) await postBatch(batchState, recentCache);
 }
 
-// ─── Highlight posts ──────────────────────────────────────────────────────────
+function canPublish(images, highlight) {
+  const current = stateIO.load();
+  if (!current.running) return false;
+  if (highlight && (!current.highlights.some(item => item.id === highlight.id) ||
+      stateIO.isExcluded(current, highlight.username))) return false;
+  return images.every(image => !stateIO.isExcluded(current, image.user?.username));
+}
 
-async function postHighlight(highlight, state, staggerMs, recentCache) {
-  if (highlight.type === 'album')     return postAlbumHighlight(highlight, state);
-  if (highlight.type === 'spotlight') return postMemberSpotlight(highlight, state, staggerMs, recentCache);
+async function finishHighlight(highlight, record = () => {}) {
+  await stateIO.update(state => {
+    const index = state.highlights.findIndex(item => item.id === highlight.id);
+    if (index >= 0) state.highlights.splice(index, 1);
+    record(state);
+  });
+}
+
+async function postHighlight(highlight, state) {
+  const uploader = highlight.username || highlight.coverImage?.user?.username;
+  if (stateIO.isExcluded(state, uploader)) {
+    logger.info(`Dropping queued highlight for excluded photographer @${uploader}`);
+    await finishHighlight(highlight);
+    return false;
+  }
+  if (highlight.type === 'album') return postAlbumHighlight(highlight, state);
+  if (highlight.type === 'spotlight') return postMemberSpotlight(highlight, state);
+  await finishHighlight(highlight);
+  return false;
 }
 
 async function postAlbumHighlight(highlight, state) {
-  logger.info(`Album highlight: ${highlight.title}`);
-
-  // Defensive re-check: commands.js/dashboard.js already filter excluded
-  // uploaders out when an album is queued, but this also covers "excluded
-  // after queueing." Skip the whole highlight rather than post a stripped
-  // version — a cover-less announcement could still surface an excluded
-  // person's album/title in a way they didn't ask for.
-  const coverUsername = highlight.coverImage?.user?.username;
-  if (coverUsername && stateIO.isExcluded(state, coverUsername)) {
-    logger.warn(`Album highlight: cover image uploader @${coverUsername} is on the excluded list — skipping "${highlight.title}"`);
-    return;
-  }
-
-  const tpl  = state.templates?.albumHighlight || '📂 New Album: {title}\n#photography';
-  const text = renderTemplate(tpl, { title: highlight.title });
+  const text = renderTemplate(state.templates.albumHighlight || stateIO.DEFAULT_STATE.templates.albumHighlight,
+    { title: highlight.title });
+  const image = highlight.coverImage;
+  const isPublishable = () => canPublish(image ? [image] : [], highlight);
 
   let postRef;
-  if (highlight.coverImage) {
-    const { buffer, mimeType } = await chevereto.downloadImage(highlight.coverImage);
+  if (image) {
+    const { buffer, mimeType } = await chevereto.downloadImage(image);
     const blob = await bsky.uploadBlob(buffer, mimeType);
-    postRef = await bsky.postPhoto(highlight.coverImage, blob, text, true);
+    postRef = await bsky.postPhoto(image, blob, text, true, isPublishable);
   } else {
-    postRef = await bsky.postText(text);
+    postRef = await bsky.postText(text, isPublishable);
   }
-  state.stats.totalPosted++;
-  state.stats.lastPostedAt = new Date().toISOString();
+  if (!postRef) return false;
 
-  // Buffer crosspost — text only for album announcements (no stable cover image URL)
-  await bufferApi.crosspost(state.buffer, {
+  await finishHighlight(highlight, current => {
+    current.stats.totalPosted++;
+    current.stats.lastPostedAt = new Date().toISOString();
+    membershipdrafts.recordAlbum(current, { highlight });
+  });
+  await bufferApi.crosspost(stateIO.load().buffer, {
     platformTexts: { bluesky: text, twitter: text, instagram: text },
   });
-
-  membershipdrafts.recordAlbum(state, { highlight });
+  return true;
 }
 
-async function postMemberSpotlight(highlight, state, staggerMs, recentCache) {
-  logger.info(`Member spotlight: @${highlight.username}`);
-
-  // Defensive re-check: commands.js/dashboard.js already block queueing a
-  // spotlight for an excluded user, but this also covers the case where
-  // someone was excluded *after* their spotlight was already sitting in
-  // the queue — better to silently skip here than post them anyway.
-  if (stateIO.isExcluded(state, highlight.username)) {
-    logger.warn(`Spotlight: @${highlight.username} is on the excluded list — skipping, not posting`);
-    return;
-  }
-
-  // Re-fetch spotlight images at post time using the proper sort URLs.
-  logger.info(`Spotlight: fetching representative images for @${highlight.username}`);
+async function postMemberSpotlight(highlight, state) {
   const images = await chevereto.fetchUserSpotlightImages(highlight.username);
-  logger.info(`Spotlight: got ${images.length} images for @${highlight.username}`);
-
-  if (images.length === 0) {
-    const fallback = highlight.images ?? [];
-    if (fallback.length === 0) {
-      logger.warn(`Spotlight: no images for @${highlight.username}, posting text-only intro`);
-      await bsky.postText(
-        renderTemplate(
-          state.templates?.memberSpotlight || '🌟 Spotlight: {name}\n#photography',
-          { name: highlight.name, username: highlight.username }
-        )
-      );
-      recordSpotlightHistory(state, highlight);
-      return;
-    }
-    images.push(...fallback.slice(0, 3));
-  }
-
-  // ── Download & upload all spotlight images ──────────────────────────────────
+  const candidates = images.length ? images : (highlight.images ?? []).slice(0, 3);
   const entries = [];
-  for (const img of images) {
+  for (const image of candidates) {
     try {
-      const { buffer, mimeType } = await chevereto.downloadImage(img);
+      const { buffer, mimeType } = await chevereto.downloadImage(image);
       const blob = await bsky.uploadBlob(buffer, mimeType);
-      const altText = img.spotlightRole ? `${img.spotlightRole} photo` : '';
-      entries.push({ image: img, blob, altText });
+      const altText = image.spotlightRole ? `${image.spotlightRole} photo` : '';
+      entries.push({ image, blob, altText });
     } catch (err) {
-      logger.warn(`Spotlight: download failed for ${img.id}: ${err.message}`);
+      logger.warn(`Spotlight: download or upload failed for ${image.id}: ${err.message}`);
     }
   }
+  if (candidates.length && !entries.length) throw new Error(`No usable photos for @${highlight.username}`);
 
-  if (entries.length === 0) {
-    logger.warn(`Spotlight: all downloads failed for @${highlight.username}`);
-    recordSpotlightHistory(state, highlight);
-    return;
-  }
-
-  // ── Build intro text — per platform so @mentions are correct ──────────────
-  const tpl       = state.templates?.memberSpotlight || '🌟 Spotlight: {name}\n#photography';
-  const userMaps  = state.userMappings ?? {};
-  const chev      = highlight.username;
-
-  const makeSpotlightText = platform => renderTemplate(tpl, {
-    name:     highlight.name,
-    username: resolveHandle(chev, userMaps, platform),
+  const tpl = state.templates.memberSpotlight || stateIO.DEFAULT_STATE.templates.memberSpotlight;
+  const makeText = platform => renderTemplate(tpl, {
+    name: highlight.name,
+    username: resolveHandle(highlight.username, state.userMappings, platform),
   });
-
-  const spotlightPlatformTexts = {
-    bluesky:   makeSpotlightText('bluesky'),
-    twitter:   makeSpotlightText('twitter'),
-    instagram: makeSpotlightText('instagram'),
+  const platformTexts = {
+    bluesky: makeText('bluesky'),
+    twitter: makeText('twitter'),
+    instagram: makeText('instagram'),
   };
-  const text = spotlightPlatformTexts.bluesky;
+  const isPublishable = () => canPublish(entries.map(({ image }) => image), highlight);
+  const postRef = entries.length
+    ? await bsky.postPhotosWithText(entries, platformTexts.bluesky, isPublishable)
+    : await bsky.postText(platformTexts.bluesky, isPublishable);
+  if (!postRef) return false;
 
-  // ── Post intro + images in one post ────────────────────────────────────────
-  const postRef = await bsky.postPhotosWithText(entries, text);
-  logger.info(`Spotlight: posted intro + ${entries.length} images for @${highlight.username}`);
-  state.stats.totalPosted++;
-  state.stats.lastPostedAt = new Date().toISOString();
-  for (const { image } of entries) {
-    state.postedIds.push(image.id_encoded ?? image.id);
-  }
-  stateIO.save(state);
-
-  // Buffer crosspost — re-rendered high-quality JPEGs, same as regular batches
-  const spotlightImageUrls = entries.map(e => renderUrlFor(e.image)).filter(Boolean);
-  await bufferApi.crosspost(state.buffer, {
-    platformTexts: spotlightPlatformTexts,
-    imageUrls:     spotlightImageUrls,
+  await finishHighlight(highlight, current => {
+    current.stats.totalPosted++;
+    current.stats.lastPostedAt = new Date().toISOString();
+    current.postedIds.push(...entries.map(({ image }) => image.id_encoded ?? image.id));
+    if (entries.length) membershipdrafts.recordSpotlight(current, { highlight, entries });
+    recordSpotlightHistory(current, highlight);
   });
-
-  membershipdrafts.recordSpotlight(state, { highlight, entries });
-
-  recordSpotlightHistory(state, highlight);
+  await bufferApi.crosspost(stateIO.load().buffer, {
+    platformTexts,
+    imageUrls: entries.map(({ image }) => renderUrlFor(image)).filter(Boolean),
+  });
+  return true;
 }
 
 function recordSpotlightHistory(state, highlight) {
@@ -410,254 +361,139 @@ function buildVrcxReplyText(worldGroups, downloaded, templates, userMappings, ur
   return lines.join('\n');
 }
 
-async function postBatch(state, staggerMs, recentCache) {
-  const INSTAGRAM_MAX = 10;
-  let picks;
-  let recencyPool = null; // only populated in recency mode — reused below for Instagram extras
-  const excludedUsernames = stateIO.getExcludedUsernameSet(state);
+async function postBatch(state, recentCache) {
+  const excluded = stateIO.getExcludedUsernameSet(state);
+  const recencyPool = state.randomMode ? [] : recentCache ?? await chevereto.fetchRecentImages(5);
+  const picks = state.randomMode
+    ? await chevereto.fetchRandomImages(POSTS_PER_HOUR, state.postedIds, excluded)
+    : chevereto.weightedSample(recencyPool, POSTS_PER_HOUR, state.postedIds, excluded);
 
-  if (state.randomMode) {
-    // ── Full-random mode: pick via /?random ──────────────────────────────────
-    logger.info('postBatch: full-random mode — fetching images via /?random');
-    picks = await chevereto.fetchRandomImages(POSTS_PER_HOUR, state.postedIds, excludedUsernames);
-    logger.info(`postBatch: ${picks.length} images selected (random): ${picks.map(p => p.id).join(', ')}`);
-
-    if (picks.length === 0) {
-      logger.warn('postBatch: /?random returned no usable images');
-      return;
-    }
-
-  } else {
-    // ── Recency-biased mode: weighted sample from /explore/recent ────────────
-    recencyPool = recentCache ?? await chevereto.fetchRecentImages(5);
-    logger.info(`postBatch: ${recencyPool.length} images in recency pool`);
-
-    if (!recencyPool.length) {
-      logger.warn('postBatch: no images returned from Chevereto — check scraper logs above');
-      return;
-    }
-
-    picks = chevereto.weightedSample(recencyPool, POSTS_PER_HOUR, state.postedIds, excludedUsernames);
-    logger.info(`postBatch: ${picks.length} images selected for Bluesky: ${picks.map(p => p.id).join(', ')}`);
-
-    if (picks.length === 0) {
-      logger.warn('postBatch: 0 images selected — pool exhausted or all already posted');
-      return;
-    }
+  if (!picks.length) {
+    logger.warn('postBatch: no usable photos selected');
+    return;
   }
 
-  // ── Fix #5: download each image once, reuse buffer for both upload and VRCX
-  logger.info(`postBatch: downloading ${picks.length} images…`);
-  const downloaded = [];
-  for (const img of picks) {
+  const uploaded = [];
+  for (const image of picks) {
+    if (!stateIO.load().running) return;
     try {
-      const { buffer, mimeType } = await chevereto.downloadImage(img);
+      const { buffer, mimeType } = await chevereto.downloadImage(image);
       const blob = await bsky.uploadBlob(buffer, mimeType);
-      downloaded.push({ image: img, blob, buffer }); // keep buffer for VRCX below
-      logger.info(`postBatch: downloaded & uploaded ${img.id}`);
+      uploaded.push({ image, blob, buffer });
     } catch (err) {
-      logger.error(`postBatch: download/upload failed for ${img.id}: ${err.message}`);
+      logger.warn(`postBatch: download or upload failed for ${image.id}: ${err.message}`);
     }
   }
+  if (!uploaded.length) return;
 
-  if (downloaded.length === 0) {
-    logger.warn('postBatch: all downloads failed, nothing to post');
-    return;
-  }
+  await Promise.all(uploaded.map(async entry => {
+    try {
+      entry.vrcx = await chevereto.extractVRCXMetadata(entry.buffer);
+    } catch (err) {
+      logger.warn(`postBatch: VRCX check failed for ${entry.image.id}: ${err.message}`);
+    }
+  }));
+  const urlMap = await kutt.shortenMany(uploaded.flatMap(({ image, vrcx }) => [image.url_viewer, vrcx?.worldUrl]).filter(Boolean));
 
-  // ── Curate Instagram's carousel — same orientation only ────────────────────
-  // Twitter and Bluesky keep whatever mix of portrait/landscape the batch has.
-  // Orientation for the primary batch is free (buffers already downloaded
-  // above); extra candidates beyond the primary batch do need real fetches
-  // to check, bounded to how many are actually needed.
-  const orientations = await Promise.all(downloaded.map(d => chevereto.getOrientation(d.buffer)));
-  const targetOrientation = determineTargetOrientation(orientations);
-  const instagramBase = downloaded
-    .filter((d, i) => orientations[i] === targetOrientation || orientations[i] === 'square')
-    .map(d => d.image);
-  logger.info(`postBatch: Instagram target orientation = ${targetOrientation} (${instagramBase.length}/${downloaded.length} of primary batch match)`);
+  const latest = stateIO.load();
+  if (!latest.running) return;
+  const downloaded = uploaded.filter(({ image }) => !stateIO.isExcluded(latest, image.user?.username));
+  if (!downloaded.length) return;
 
-  const pickedIds = new Set(downloaded.map(d => d.image.id_encoded ?? d.image.id));
-  const need = INSTAGRAM_MAX - instagramBase.length;
-  let instagramExtra = [];
-  if (need > 0) {
-    const excludeIds = [...state.postedIds, ...pickedIds];
-    const candidatePool = state.randomMode
-      ? await chevereto.fetchRandomImages(need * 3, excludeIds, excludedUsernames)
-      : chevereto.weightedSample(recencyPool ?? [], need * 3, excludeIds, excludedUsernames);
-    instagramExtra = await pickOrientationMatched(candidatePool, targetOrientation, need);
-  }
-  const instagramPicks = [...instagramBase, ...instagramExtra];
-  logger.info(`postBatch: ${instagramPicks.length} images for Instagram (${instagramBase.length} from primary batch + ${instagramExtra.length} orientation-matched extra)`);
-
-  // ── Fix #19: extract VRCX metadata concurrently (reuse cached buffers)
-  const vrcxResults = await Promise.all(
-    downloaded.map(async ({ image, buffer }) => {
-      try {
-        const vrcx = await chevereto.extractVRCXMetadata(buffer);
-        if (vrcx) logger.info(`postBatch: VRCX found in ${image.id}: ${vrcx.worldName}`);
-        else       logger.info(`postBatch: no VRCX metadata in ${image.id}`);
-        return { id: image.id, vrcx };
-      } catch (err) {
-        logger.warn(`postBatch: VRCX check error for ${image.id}: ${err.message}`);
-        return { id: image.id, vrcx: null };
-      }
-    })
-  );
-
-  const vrcxByImageId = {};
-  for (const { id, vrcx } of vrcxResults) {
-    if (vrcx) vrcxByImageId[id] = vrcx;
-  }
-
-  // ── Shorten long URLs for reply threads and captions ───────────────────────
-  // VRChat world URLs go into the VRCX reply thread and Buffer captions.
-  // Chevereto viewer URLs go into the image links reply and the {url} template
-  // variable. Both are stable per world/image, so the cache fills up over time
-  // and API calls become increasingly rare.
-  const urlMap = await kutt.shortenMany([
-    ...Object.values(vrcxByImageId).map(v => v.worldUrl).filter(Boolean),
-    ...downloaded.map(d => d.image.url_viewer).filter(Boolean),
-  ]);
-
-  // ── Build entries with per-image alt text ──────────────────────────────────
-  const entries = downloaded.map(({ image, blob }) => {
-    const vrcx = vrcxByImageId[image.id];
-    const altText = vrcx
-      ? (vrcx.worldUrl ? `${vrcx.worldName} | ${vrcx.worldUrl}` : vrcx.worldName)
-      : '';
-    return { image, blob, altText };
-  });
-
-  // ── Build caption text for every platform ─────────────────────────────────
-  const platformTexts = buildPlatformTexts(
-    downloaded.map(d => d.image),
-    state.templates,
-    state.customTags ?? [],
-    state.userMappings ?? {},
-    urlMap
-  );
-  // Bluesky gets the bluesky-specific caption
-  const text = platformTexts.bluesky;
-
-  // ── Post ───────────────────────────────────────────────────────────────────
-  let postRef = null;
-  try {
-    postRef = await bsky.postPhotosWithText(entries, text);
-    logger.info(`postBatch: posted ${downloaded.length} images in one post`);
-  } catch (err) {
-    logger.error(`postBatch: failed to post: ${err.message}`);
-    return;
-  }
-
-  // Mark all as posted
-  for (const { image } of downloaded) {
-    state.postedIds.push(image.id_encoded ?? image.id);
-    state.stats.totalPosted++;
-  }
-  state.stats.lastPostedAt = new Date().toISOString();
-  stateIO.save(state);
-
+  const images = downloaded.map(({ image }) => image);
+  const entries = downloaded.map(({ image, blob, vrcx }) => ({
+    image,
+    blob,
+    altText: vrcx ? [vrcx.worldName, vrcx.worldUrl].filter(Boolean).join(' | ') : cleanTitle(image) || 'Photo',
+  }));
+  const platformTexts = buildPlatformTexts(images, latest.templates, latest.customTags, latest.userMappings, urlMap);
+  const postRef = await bsky.postPhotosWithText(entries, platformTexts.bluesky, () => canPublish(images));
   if (!postRef) return;
 
-  // ── Reply 1: World Information (Fix #2: use template) ─────────────────────
-  const anyVrcx    = Object.keys(vrcxByImageId).length > 0;
-  const worldGroups = new Map(); // hoisted — also used by Buffer crosspost below
-  let lastRef = postRef;
-
-  if (anyVrcx) {
-    // Build ordered map: worldKey → { vrcx, nums[] }
-    for (let i = 0; i < downloaded.length; i++) {
-      const { image } = downloaded[i];
-      const vrcx      = vrcxByImageId[image.id];
-      if (!vrcx) continue;
-      const key = vrcx.worldId || vrcx.worldName;
-      if (!worldGroups.has(key)) worldGroups.set(key, { vrcx, nums: [] });
-      worldGroups.get(key).nums.push(i + 1);
-    }
-
-    // Fix #2: render via template instead of hardcoded strings
-    const worldText   = buildVrcxReplyText(worldGroups, downloaded, state.templates, state.userMappings ?? {}, urlMap);
-    const worldChunks = chunkText(worldText);
-    lastRef = await sendChunkedReplies(postRef, postRef, worldChunks);
-    logger.info(`postBatch: world info reply posted (${worldGroups.size} unique world(s))`);
-  } else {
-    logger.info('postBatch: no VRCX data in any image — skipping world info reply');
+  const worldGroups = new Map();
+  for (const [index, { vrcx }] of downloaded.entries()) {
+    if (!vrcx) continue;
+    const key = vrcx.worldId || vrcx.worldName;
+    if (!worldGroups.has(key)) worldGroups.set(key, { vrcx, nums: [] });
+    worldGroups.get(key).nums.push(index + 1);
   }
-
-  // World-stats heatmap: reuses worldGroups/downloaded exactly as-is — no
-  // separate scrape or parsing needed since we already have the structured
-  // data right here. No-ops safely if worldGroups is empty (no VRCX this batch).
-  // Strips resolveHandle's leading "@" so live-recorded names use the same
-  // bare-handle convention the historical backfill parser stores.
-  await worldstats.recordBatch(
-    worldGroups,
-    downloaded,
-    username => resolveHandle(username, state.userMappings ?? {}, 'bluesky').replace(/^@/, ''),
-    postRef.uri,
-  );
-
-  // Weekly/monthly roundup tracking — no longer a draft per batch (that
-  // just mirrored every other platform's cadence); this quietly tallies
-  // into the running week/month totals, and checkRoundups() (top of
-  // runCycle) turns a completed period into a single roundup draft.
-  membershipdrafts.trackBatch(state, { downloaded, worldGroups });
-
-  // ── Reply 2: Image Links ───────────────────────────────────────────────────
-  // Fix #12: single source of truth for the Chevereto link reply header
-  const linkLines = [LINK_REPLY_HEADER];
-  for (let i = 0; i < downloaded.length; i++) {
-    const { image } = downloaded[i];
-    if (image.url_viewer) {
-      const viewerUrl = urlMap.get(image.url_viewer) || image.url_viewer;
-      linkLines.push(`Image ${i + 1}: ${viewerUrl}`);
-    }
-  }
-
-  const linkChunks = chunkText(linkLines.join('\n'));
-  await sendChunkedReplies(postRef, lastRef, linkChunks);
-
-  // ── Buffer crosspost ───────────────────────────────────────────────────────
-  // Twitter and Instagram get a re-rendered high-quality JPEG built from the
-  // same original file Bluesky uses (see imagerender.js), instead of
-  // Chevereto's own downscaled .md. thumbnail — falls back to the .md. URL
-  // if PUBLIC_BASE_URL isn't configured, so this never blocks a post.
-  const batchImageUrls     = downloaded.map(d => renderUrlFor(d.image)).filter(Boolean);
-  const instagramImageUrls = instagramPicks.map(renderUrlFor).filter(Boolean);
-
-  let bufferWorldText = '';
-  if (anyVrcx) {
-    const worldLines = [];
-    for (const { vrcx } of worldGroups.values()) {
-      worldLines.push(`🌍 ${vrcx.worldName}`);
-      if (vrcx.worldUrl) worldLines.push(urlMap.get(vrcx.worldUrl) || vrcx.worldUrl);
-    }
-    bufferWorldText = worldLines.join('\n');
-  }
-
-  // Instagram doesn't hyperlink captions or comments, but this still gives
-  // people the same world info + per-image links Bluesky gets as a reply
-  // thread — just as a first comment instead, since IG has no reply concept.
-  // Note: Buffer currently has a known bug where Instagram firstComment is
-  // silently dropped server-side (works fine for Facebook/LinkedIn) — this
-  // is sent regardless so it starts working the moment Buffer fixes it.
-  const igFirstComment = [bufferWorldText, linkLines.join('\n')]
-    .filter(Boolean)
-    .join('\n\n')
-    .slice(0, 2200);
-
-  await bufferApi.crosspost(state.buffer, {
-    platformTexts,
-    worldText:         bufferWorldText || undefined,
-    firstCommentText:  igFirstComment  || undefined,
-    // Image viewer links — Bluesky gets these as a reply thread; Twitter gets
-    // them as additional tweets; Instagram gets them via firstCommentText above.
-    linkText:          linkLines.length > 1 ? linkLines.join('\n') : undefined,
-    imageUrls:         batchImageUrls,
-    platformImageUrls: { instagram: instagramImageUrls },
+  await stateIO.update(current => {
+    current.postedIds.push(...images.map(image => image.id_encoded ?? image.id));
+    current.stats.totalPosted += images.length;
+    current.stats.lastPostedAt = new Date().toISOString();
+    membershipdrafts.trackBatch(current, { downloaded, worldGroups });
   });
 
-  logger.info(`postBatch: cycle complete — ${downloaded.length} images posted with reply thread`);
+  let lastRef = postRef;
+  if (worldGroups.size) {
+    const worldText = buildVrcxReplyText(worldGroups, downloaded, latest.templates, latest.userMappings, urlMap);
+    await worldstats.recordBatch(
+      worldGroups,
+      downloaded,
+      username => resolveHandle(username, latest.userMappings, 'bluesky').replace(/^@/, ''),
+      postRef.uri,
+    ).catch(err => logger.warn(`postBatch: could not record world stats — ${err.message}`));
+    lastRef = await sendChunkedReplies(postRef, postRef, chunkText(worldText));
+  }
+
+  const linkText = buildImageLinks(images, urlMap);
+  await sendChunkedReplies(postRef, lastRef, chunkText(linkText));
+  logger.info(`postBatch: posted ${images.length} images with reply thread`);
+
+  const crosspostState = stateIO.load();
+  const { buffer: bufferConfig } = crosspostState;
+  if (!bufferConfig.enabled || !bufferConfig.token || !bufferConfig.channels.length || !canPublish(images)) return;
+  const instagramEnabled = bufferConfig.channels.some(({ service }) =>
+    ['instagram', 'unknown'].includes(service.toLowerCase()));
+  const instagramPicks = instagramEnabled
+    ? await selectInstagramImages(downloaded, crosspostState, recencyPool, state.randomMode)
+    : [];
+
+  if (!canPublish(images)) return;
+  const finalState = stateIO.load();
+  const instagramMedia = instagramPicks
+    .filter(image => !stateIO.isExcluded(finalState, image.user?.username))
+    .map(image => ({ image, url: renderUrlFor(image) }))
+    .filter(({ url }) => url);
+  const instagramImages = instagramMedia.map(({ image }) => image);
+  platformTexts.instagram = buildPostText(
+    instagramImages, latest.templates, latest.customTags, latest.userMappings, 'instagram', urlMap,
+  );
+
+  const worldText = [...worldGroups.values()]
+    .flatMap(({ vrcx }) => [`🌍 ${vrcx.worldName}`, urlMap.get(vrcx.worldUrl) || vrcx.worldUrl])
+    .filter(Boolean).join('\n');
+  const firstCommentText = [worldText, buildImageLinks(instagramImages, urlMap)].filter(Boolean).join('\n\n').slice(0, 2200);
+  await bufferApi.crosspost(finalState.buffer, {
+    platformTexts,
+    worldText,
+    firstCommentText,
+    linkText,
+    imageUrls: images.map(renderUrlFor).filter(Boolean),
+    platformImageUrls: { instagram: instagramMedia.map(({ url }) => url) },
+  });
+}
+
+function buildImageLinks(images, urlMap) {
+  const links = [LINK_REPLY_HEADER];
+  for (const [index, { url_viewer: viewerUrl }] of images.entries()) {
+    if (viewerUrl) links.push(`Image ${index + 1}: ${urlMap.get(viewerUrl) || viewerUrl}`);
+  }
+  return links.join('\n');
+}
+
+async function selectInstagramImages(downloaded, state, recencyPool, randomMode) {
+  const orientations = await Promise.all(downloaded.map(({ buffer }) => chevereto.getOrientation(buffer)));
+  const target = determineTargetOrientation(orientations);
+  const images = downloaded
+    .filter((_, index) => orientations[index] === target || orientations[index] === 'square')
+    .map(({ image }) => image);
+  const need = 10 - images.length;
+  const excluded = stateIO.getExcludedUsernameSet(state);
+  const candidates = randomMode
+    ? await chevereto.fetchRandomImages(need * 3, state.postedIds, excluded)
+    : chevereto.weightedSample(recencyPool, need * 3, state.postedIds, excluded);
+  return [...images, ...await pickOrientationMatched(candidates, target, need)];
 }
 
 // ─── Instagram orientation matching ───────────────────────────────────────────

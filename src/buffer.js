@@ -305,10 +305,11 @@ async function crosspost(bufferState, {
       const limit = PLATFORM_LIMITS[svc] ?? DEFAULT_LIMIT;
 
       // Pick the platform-specific caption, fall back to generic text
-      const baseText = platformTexts?.[svc] ?? platformTexts?.bluesky ?? text ?? '';
+      const baseText = platformTexts?.[svc === 'x' ? 'twitter' : svc] ?? platformTexts?.bluesky ?? text ?? '';
 
       // Pick platform-specific image list, fall back to default imageUrls
       const urls = platformImageUrls[svc] ?? imageUrls;
+      if (svc === 'instagram' && !urls.length) return;
 
       const fullText = worldText ? `${baseText}\n\n${worldText}` : baseText;
 

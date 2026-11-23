@@ -68,13 +68,21 @@ const BOT_START_MS = Date.now();
 
 async function startDMPoller(postNowCallback) {
   logger.info('DM poller started');
-  setInterval(() => pollOnce(postNowCallback), 60_000);
+  let polling = false;
+  setInterval(async () => {
+    if (polling) return;
+    polling = true;
+    try {
+      await pollOnce(postNowCallback);
+    } catch (err) {
+      logger.warn(`DM poll error: ${err.message}`);
+    } finally {
+      polling = false;
+    }
+  }, 60_000);
 }
 
 async function pollOnce(postNowCallback) {
-  // Load state fresh from disk so DM commands see the latest dashboard changes
-  // (exclusions, highlights, etc.) without needing a bot restart.
-  const state = stateIO.load();
   const messages = await bsky.pollDMs(seenMessageIds);
 
   for (const msg of messages) {
@@ -95,29 +103,29 @@ async function pollOnce(postNowCallback) {
     }
 
     logger.info(`Command from ${handle}: ${msg.text}`);
-    const reply = await handleCommand(msg.text.trim(), state, postNowCallback);
+    const reply = await handleCommand(msg.text.trim(), postNowCallback);
     if (reply) await bsky.replyDM(msg.convoId, reply);
-    stateIO.save(state);
   }
 }
 
 // ─── Command router ───────────────────────────────────────────────────────────
 
-async function handleCommand(text, state, postNowCallback) {
+async function handleCommand(text, postNowCallback) {
   const [cmd, ...args] = text.split(/\s+/);
   const arg = args.join(' ').trim();
 
   switch (cmd.toLowerCase()) {
 
     case '!start':
-      state.running = true;
+      await stateIO.update(state => { state.running = true; });
       return '✅ Bot resumed. Photos will post on schedule.';
 
     case '!stop':
-      state.running = false;
+      await stateIO.update(state => { state.running = false; });
       return '⏸️ Bot paused. Use !start to resume.';
 
     case '!status': {
+      const state = stateIO.load();
       const next = state.running ? 'running ✅' : 'paused ⏸️';
       const last = state.stats.lastPostedAt
         ? new Date(state.stats.lastPostedAt).toLocaleString()
@@ -131,6 +139,7 @@ async function handleCommand(text, state, postNowCallback) {
     }
 
     case '!stats': {
+      const state = stateIO.load();
       const last = state.stats.lastPostedAt
         ? new Date(state.stats.lastPostedAt).toLocaleString()
         : 'never';
@@ -144,21 +153,16 @@ async function handleCommand(text, state, postNowCallback) {
 
     case '!post':
       if (arg.toLowerCase() === 'now') {
-        // Fire-and-forget, but still catch rejections — an unhandled rejection
-        // from an unawaited async call would crash the whole process (same
-        // class of bug fixed in dashboard.js's /api/post-now route).
-        Promise.resolve(postNowCallback()).catch(err =>
-          logger.error(`!post now: unhandled cycle error — ${err.message}\n${err.stack}`)
-        );
-        return '🚀 Posting a batch right now!';
+        const { started, reason } = postNowCallback();
+        return started ? '🚀 Posting a batch right now!' : `❌ ${reason}`;
       }
       return '❓ Did you mean !post now?';
 
     case '!highlight':
-      return await cmdHighlight(arg, state);
+      return await cmdHighlight(arg);
 
     case '!spotlight':
-      return await cmdSpotlight(arg, state);
+      return await cmdSpotlight(arg);
 
     case '!help':
       return HELP_TEXT;
@@ -170,7 +174,7 @@ async function handleCommand(text, state, postNowCallback) {
 
 // ─── !highlight <albumId | albumHash> ────────────────────────────────────────
 
-async function cmdHighlight(albumIdOrHash, state) {
+async function cmdHighlight(albumIdOrHash) {
   if (!albumIdOrHash) return '❌ Usage: !highlight <album_id_or_hash>';
 
   try {
@@ -178,24 +182,21 @@ async function cmdHighlight(albumIdOrHash, state) {
     if (!album) return `❌ Album not found: ${albumIdOrHash}`;
 
     const rawImages = await chevereto.fetchAlbumImages(albumIdOrHash);
-    const excludedUsernames = stateIO.getExcludedUsernameSet(state);
-    const images = chevereto.filterExcludedUsers(rawImages, excludedUsernames);
-
-    if (rawImages.length > 0 && images.length === 0) {
+    const queued = await stateIO.update(state => {
+      const images = chevereto.filterExcludedUsers(rawImages, stateIO.getExcludedUsernameSet(state));
+      if (rawImages.length && !images.length) return false;
+      stateIO.enqueueHighlight(state, {
+        type: 'album',
+        albumId: albumIdOrHash,
+        title: album.name,
+        coverImage: images[0] ?? null,
+      });
+      return true;
+    });
+    if (!queued) {
       logger.warn(`!highlight: album "${album.name}" is entirely from excluded uploader(s) — refusing to queue`);
       return `❌ This album is entirely from a photographer who's opted out of auto-posting — not queuing it.`;
     }
-
-    const cover = images[0];
-
-    // Queue the highlight – scheduler will post it at the next cycle
-    state.highlights.push({
-      type:       'album',
-      albumId:    albumIdOrHash,
-      title:      album.name,
-      coverImage: cover ?? null,
-      queuedAt:   new Date().toISOString(),
-    });
 
     return [
       `📂 Album queued for highlight!`,
@@ -211,10 +212,10 @@ async function cmdHighlight(albumIdOrHash, state) {
 
 // ─── !spotlight <username> ────────────────────────────────────────────────────
 
-async function cmdSpotlight(username, state) {
+async function cmdSpotlight(username) {
   if (!username) return '❌ Usage: !spotlight <chevereto_username>';
 
-  if (stateIO.isExcluded(state, username)) {
+  if (stateIO.isExcluded(stateIO.load(), username)) {
     return `❌ @${username} has opted out of auto-posting — not spotlighting them.`;
   }
 
@@ -224,13 +225,17 @@ async function cmdSpotlight(username, state) {
 
     const images = await chevereto.fetchUserSpotlightImages(username);
 
-    state.highlights.push({
-      type:     'spotlight',
-      username: user.username,
-      name:     user.name ?? user.username,
-      images:   images,
-      queuedAt: new Date().toISOString(),
+    const queued = await stateIO.update(state => {
+      if (stateIO.isExcluded(state, user.username)) return false;
+      stateIO.enqueueHighlight(state, {
+        type: 'spotlight',
+        username: user.username,
+        name: user.name ?? user.username,
+        images,
+      });
+      return true;
     });
+    if (!queued) return `❌ @${username} has opted out of auto-posting — not spotlighting them.`;
 
     return [
       `🌟 Spotlight queued for @${user.username}!`,
