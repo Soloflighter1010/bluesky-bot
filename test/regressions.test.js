@@ -25,6 +25,7 @@ Object.assign(process.env, {
   OIDC_ISSUER_URL: '',
 });
 const bsky = require('../src/bluesky');
+const buffer = require('../src/buffer');
 const chevereto = require('../src/chevereto');
 const dashboard = require('../src/dashboard');
 const scheduler = require('../src/scheduler');
@@ -114,6 +115,77 @@ test('random uploads credit the actual profiles, skip opted-out and unidentified
   }]);
   await trigger().completion;
   assert.equal(posted.at(-1).caption, '📸 @luna.example.test\nMorning Light\n#photography #VRChat');
+});
+
+test('Instagram credits and links match its carousel when it swaps a Bluesky photo', async t => {
+  const posted = mockPosting(t);
+  const landscape = {
+    id: 'AA01', title: 'The Dam', user: { username: 'luna' },
+    url: `${base}/uploads/dam.jpg`, url_viewer: `${base}/image/AA01`,
+  };
+  const portrait = {
+    id: 'AA02', title: 'The Tower', user: { username: 'kai' },
+    url: `${base}/uploads/tower.jpg`, url_viewer: `${base}/image/AA02`,
+  };
+  const extra = {
+    id: 'AA03', title: 'capture-124', user: { username: 'sol' },
+    url: `${base}/uploads/capture-124.jpg`, url_viewer: `${base}/image/AA03`,
+  };
+  await stateIO.update(state => {
+    state.randomMode = true;
+    state.buffer.enabled = true;
+    state.buffer.token = 'fixture-buffer-token';
+    state.buffer.channels = [{ id: 'fixture', service: 'instagram' }];
+    state.userMappings = {
+      luna: { bluesky: 'luna.example.test', instagram: 'luna.photos' },
+      kai: { bluesky: 'kai.example.test', instagram: 'kai.photos' },
+      sol: { bluesky: 'sol.example.test', instagram: 'sol.photos' },
+    };
+  });
+  t.mock.method(chevereto, 'fetchRandomImages', async (_limit, seen) =>
+    seen.length ? [extra] : [landscape, portrait]);
+  t.mock.method(chevereto, 'downloadImage', async ({ id }) => ({
+    buffer: Buffer.from(id === portrait.id ? 'portrait' : 'landscape'),
+    mimeType: 'image/jpeg',
+  }));
+  t.mock.method(chevereto, 'getOrientation', async bytes => bytes.toString());
+  const crosspost = t.mock.method(buffer, 'crosspost', async () => {});
+
+  const trigger = scheduler.startScheduler();
+  await trigger().completion;
+  assert.deepEqual(posted[0].ids, [landscape.id, portrait.id]);
+  assert.match(posted[0].caption, /@luna\.example\.test @kai\.example\.test/);
+  assert.equal(crosspost.mock.callCount(), 1);
+  const [, options] = crosspost.mock.calls[0].arguments;
+  assert.deepEqual(options.platformImageUrls.instagram, [landscape.url, extra.url]);
+  assert.equal(options.platformTexts.instagram, '📸 @luna.photos @sol.photos\nThe Dam\n#photography #VRChat');
+  assert.equal(options.firstCommentText.split('\n').slice(1).join('\n'),
+    `Image 1: ${landscape.url_viewer}\nImage 2: ${extra.url_viewer}`);
+});
+
+test('an opt-out saved during upload removes the photo and its credit from the current batch', async t => {
+  const posted = mockPosting(t);
+  const excluded = { id: 'AA01', title: 'The Tower', user: { username: 'Kai' } };
+  const allowed = { id: 'AA02', title: 'The Dam', user: { username: 'luna' } };
+  await stateIO.update(state => { state.randomMode = true; });
+  t.mock.method(chevereto, 'fetchRandomImages', async () => [excluded, allowed]);
+  t.mock.method(chevereto, 'downloadImage', async ({ id }) => ({
+    buffer: Buffer.from(id), mimeType: 'image/jpeg',
+  }));
+  t.mock.method(bsky, 'uploadBlob', async bytes => {
+    if (bytes.toString() === excluded.id) {
+      await stateIO.update(state => { state.excludedUsers.kai = { expiresAt: null }; });
+    }
+    return {};
+  });
+
+  const trigger = scheduler.startScheduler();
+  await trigger().completion;
+  assert.deepEqual(posted, [{ ids: [allowed.id], caption: '📸 luna\nThe Dam\n#photography #VRChat' }]);
+  const state = stateIO.load();
+  assert.deepEqual(state.postedIds, [allowed.id]);
+  assert.equal(state.stats.totalPosted, 1);
+  assert.equal(stateIO.isExcluded(state, 'Kai'), true);
 });
 
 test('Pause during a cycle prevents publication and a concurrent trigger is rejected', async t => {
