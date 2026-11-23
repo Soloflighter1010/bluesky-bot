@@ -310,6 +310,22 @@ test('dashboard rejects old placeholder credentials and image rendering falls ba
   assert.equal(processResult.status, 0, processResult.stderr);
 });
 
+test('dashboard password verification is rate-limited', async t => {
+  const server = await dashboard.startDashboard();
+  t.after(() => new Promise(resolve => server.close(resolve)));
+  const url = `http://127.0.0.1:${server.address().port}/api/verify`;
+  const request = { method: 'POST', headers: { 'x-dashboard-secret': adminSecret } };
+  for (let attempt = 0; attempt < 20; attempt++) {
+    const response = await fetch(url, request);
+    assert.equal(response.status, 200);
+    await response.json();
+  }
+  const throttled = await fetch(url, request);
+  assert.equal(throttled.status, 429);
+  assert.ok(Number(throttled.headers.get('retry-after')) > 0);
+  assert.deepEqual(await throttled.json(), { error: 'Too many requests' });
+});
+
 test('Bluesky rejects oversized photo batches before publishing', async () => {
   await assert.rejects(bsky.postPhotosWithText(new Array(5), 'fixture'), /requires 1–4 images/);
 });

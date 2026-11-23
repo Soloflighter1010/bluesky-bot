@@ -27,6 +27,7 @@ const express     = require('express');
 const fs          = require('node:fs');
 const { once }    = require('node:events');
 const session     = require('express-session');
+const { rateLimit } = require('express-rate-limit');
 const path        = require('path');
 const crypto      = require('crypto');
 const axios       = require('axios');
@@ -69,27 +70,6 @@ function isEmailAllowed(email) {
       : lc === rule             // exact match
   );
 }
-
-// ── Rate limiter (no extra dependency) ────────────────────────────────────────
-function makeRateLimiter({ windowMs, max }) {
-  const hits = new Map();
-  return function rateLimiter(req, res, next) {
-    const ip  = req.ip || req.socket?.remoteAddress || 'unknown';
-    const now = Date.now();
-    const windowStart = now - windowMs;
-    const times = (hits.get(ip) || []).filter(t => t > windowStart);
-    times.push(now);
-    hits.set(ip, times);
-    if (times.length > max) {
-      logger.warn(`Rate limit exceeded for ${ip} on ${req.path}`);
-      return res.status(429).json({ error: 'Too many requests' });
-    }
-    next();
-  };
-}
-
-const authRateLimit = makeRateLimiter({ windowMs: 15 * 60_000, max: 20  });
-const generalLimit  = makeRateLimiter({ windowMs: 60_000,       max: 120 });
 
 function hasDashboardSecret(req) {
   const provided = Buffer.from((req.get('x-dashboard-secret') || '').trim());
@@ -153,8 +133,13 @@ async function startDashboard() {
   }
 
   const app = express();
+  // Trust the first proxy hop for client IPs and secure cookies.
+  if (process.env.TRUST_PROXY === 'true') app.set('trust proxy', 1);
+
+  const limitOptions = { message: { error: 'Too many requests' }, legacyHeaders: false, standardHeaders: 'draft-8' };
+  const authRateLimit = rateLimit({ ...limitOptions, windowMs: 15 * 60_000, limit: 20 });
+  app.use(rateLimit({ ...limitOptions, windowMs: 60_000, limit: 120 }));
   app.use(express.json());
-  app.use(generalLimit);
 
   // ── Session middleware ────────────────────────────────────────────────────────
   app.use(session({
@@ -181,9 +166,6 @@ async function startDashboard() {
     }
     next();
   });
-
-  // Trust the first proxy hop (needed for req.ip and secure cookies behind nginx/Caddy)
-  if (process.env.TRUST_PROXY === 'true') app.set('trust proxy', 1);
 
   app.use(express.static(path.join(__dirname, '..', 'dashboard'), { extensions: ['html'] }));
 
