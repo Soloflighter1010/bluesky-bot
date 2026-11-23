@@ -63,15 +63,18 @@ function deferred() {
   return { promise, resolve };
 }
 
-function viewer(title, photographer) {
+function viewer(title, photographer, { avatarOnly = false } = {}) {
   const author = photographer
-    ? `<div class="header-content-breadcrum"><a class="user-link" href="/gallery/user/${photographer}">Display Name</a></div>`
-    : '<div class="header-content-breadcrum"><span class="user-link">Guest</span></div>';
+    ? avatarOnly
+      ? `<div class="breadcrum-item"><a class="user-image" aria-label="Avatar" href="/gallery/${photographer}"><img alt="${photographer}"></a></div>`
+      : `<a class="user-link" href="/gallery/user/${photographer}">Display Name</a>`
+    : '<span class="user-link">Guest</span>';
   return `<meta property="og:title" content="fallback-asset.png">
     <meta property="og:image" content="/gallery/uploads/asset.md.png">
-    <nav><a href="/gallery/api-v1">API</a><a href="/gallery/othermember">Other member</a></nav>
+    <nav><a href="/gallery/api-v1">API</a><a href="/gallery/othermember" class="user-image">Account</a></nav>
     <button data-type="album" data-id="wrongAlbum"></button>
-    ${author}<h1 class="viewer-title" data-text="image-title">${title}</h1>`;
+    <div class="header-content-breadcrum">${author}</div>
+    <h1 class="viewer-title" data-text="image-title">${title}</h1>`;
 }
 
 test('random viewer redirects stay on the gallery origin while canonical redirects still work', async t => {
@@ -94,6 +97,56 @@ test('random viewer redirects stay on the gallery origin while canonical redirec
   assert.equal(images[0].user.username, 'luna');
   assert.deepEqual(request.mock.calls.map(call => call.arguments[0]), [random, random, original, canonical]);
   assert.ok(request.mock.calls.every(call => call.arguments[1].maxRedirects === 0));
+});
+
+test('a gallery may upgrade its random endpoint to HTTPS on the configured host', () => {
+  const result = spawnSync(process.execPath, ['-e', `
+    const assert = require('node:assert/strict');
+    const axios = require('axios');
+    const requests = [
+      ['http://photos.example.test/gallery/?random', { status: 301, location: 'https://photos.example.test/gallery/?random' }],
+      ['https://photos.example.test/gallery/?random', { status: 302, location: '/gallery/image/AA01' }],
+      ['https://photos.example.test/gallery/image/AA01', { status: 200 }],
+    ];
+    axios.get = async (url, { maxRedirects }) => {
+      const [expected, { status, location }] = requests.shift();
+      assert.equal(url, expected);
+      assert.equal(maxRedirects, 0);
+      return { status, headers: { location }, data: process.env.FIXTURE_VIEWER_HTML };
+    };
+    require('./src/chevereto').fetchRandomImages(1).then(images => {
+      assert.equal(requests.length, 0);
+      assert.equal(images[0].user.username, 'luna');
+      assert.equal(images[0].url_viewer, 'https://photos.example.test/gallery/image/AA01');
+    }).catch(error => {
+      console.error(error);
+      process.exitCode = 1;
+    });
+  `], {
+    encoding: 'utf8',
+    env: {
+      ...process.env,
+      CHEVERETO_BASE_URL: base.replace('https:', 'http:'),
+      FIXTURE_VIEWER_HTML: viewer('Gallery title', 'luna', { avatarOnly: true }),
+    },
+  });
+  assert.equal(result.status, 0, result.stderr);
+});
+
+test('random selection returns its partial batch after Chevereto rate-limits further requests', async t => {
+  const random = `${base}/?random`;
+  const image = `${base}/image/AA01`;
+  let randomAttempts = 0;
+  const request = t.mock.method(axios, 'get', async url => {
+    if (url === image) return { status: 200, data: viewer('Gallery title', 'luna') };
+    if (url === random && ++randomAttempts === 1) return { status: 302, headers: { location: image } };
+    const err = new Error('Chevereto rate limit');
+    err.response = { status: 429 };
+    throw err;
+  });
+  const images = await chevereto.fetchRandomImages(4);
+  assert.deepEqual(images.map(({ id }) => id), ['AA01']);
+  assert.deepEqual(request.mock.calls.map(call => call.arguments[0]), [random, image, random]);
 });
 
 test('image downloads allow a configured CDN and check its redirect destinations', async t => {
@@ -127,7 +180,7 @@ test('random uploads credit the actual profiles, skip opted-out and unidentified
     ['ZZ02', viewer('Excluded photo', 'PrivateUser')],
     ['AA01', viewer('VRChat_2025-10-11_02-33-44.421_1920x1080.png', 'luna')],
     ['AA02', viewer('Moonlit Bridge', 'kai')],
-    ['AA03', viewer('capture-001', 'luna')],
+    ['AA03', viewer('VRChat 2025 02 05 21 37 28.457 3840x2160', 'luna', { avatarOnly: true })],
     ['AA04', viewer('capture-002.webp', 'kai')],
     ['AA05', viewer('Unpublished fifth photo', 'kai')],
   ]);
@@ -136,7 +189,7 @@ test('random uploads credit the actual profiles, skip opted-out and unidentified
     if (url === `${base}/?random`) {
       const id = ids.next().value;
       assert.ok(id, 'only the required viewer pages should be requested');
-      return { headers: { location: `/gallery/image/photo.${id}` } };
+      return { status: 302, headers: { location: `/gallery/image/photo.${id}` } };
     }
     const id = url.split('.').at(-1);
     assert.ok(pages.has(id), `unexpected URL: ${url}`);

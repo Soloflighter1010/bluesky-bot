@@ -13,7 +13,9 @@ const logger  = require('./logger');
 
 const BASE_URL = process.env.CHEVERETO_BASE_URL?.replace(/\/$/, '');
 const SITE_URL = BASE_URL ? new URL(`${BASE_URL}/`) : undefined;
-const SITE_ORIGINS = SITE_URL ? [SITE_URL.origin] : [];
+const HTTPS_SITE_URL = SITE_URL?.protocol === 'http:' ? new URL(SITE_URL) : undefined;
+if (HTTPS_SITE_URL) HTTPS_SITE_URL.protocol = 'https:';
+const SITE_ORIGINS = [SITE_URL?.origin, HTTPS_SITE_URL?.origin].filter(Boolean);
 const MEDIA_ORIGINS = [
   ...SITE_ORIGINS,
   ...(process.env.CHEVERETO_MEDIA_ORIGINS || '').split(',').map(value => value.trim()).filter(Boolean)
@@ -31,7 +33,7 @@ const HTTP_HEADERS = {
 const PAGE_OPTIONS = { timeout: 15_000, headers: HTTP_HEADERS };
 const REDIRECT_STATUSES = new Set([301, 302, 303, 307, 308]);
 
-async function trustedGet(input, options, { media = false, followRedirects = true } = {}) {
+async function trustedGet(input, options, { media = false } = {}) {
   const allowedOrigins = media ? MEDIA_ORIGINS : SITE_ORIGINS;
   const acceptStatus = options.validateStatus ?? (status => status >= 200 && status < 300);
   let target = new URL(input, SITE_URL);
@@ -40,7 +42,8 @@ async function trustedGet(input, options, { media = false, followRedirects = tru
     if (!origin || !['https:', 'http:'].includes(target.protocol) || target.username || target.password ||
         (!media && !target.pathname.startsWith(SITE_URL.pathname) &&
          target.pathname !== SITE_URL.pathname.slice(0, -1))) {
-      throw new Error('Chevereto URL is outside the configured site or media origins');
+      const setting = media ? 'CHEVERETO_MEDIA_ORIGINS' : 'CHEVERETO_BASE_URL';
+      throw new Error(`Chevereto URL is outside the configured origins: ${target.origin} (check ${setting})`);
     }
 
     // Build the request from a configured origin and encoded path segments.
@@ -59,7 +62,7 @@ async function trustedGet(input, options, { media = false, followRedirects = tru
       maxRedirects: 0,
       validateStatus: status => REDIRECT_STATUSES.has(status) || acceptStatus(status),
     });
-    if (!followRedirects || !REDIRECT_STATUSES.has(response.status)) return { response, url };
+    if (!REDIRECT_STATUSES.has(response.status)) return { response, url };
     if (!response.headers?.location) throw new Error('Chevereto redirect has no destination');
     target = new URL(response.headers.location, url);
   }
@@ -384,9 +387,8 @@ function profileUsername(href, viewerUrl) {
   if (!href) return '';
   try {
     const profile = new URL(href, viewerUrl);
-    const base = new URL(BASE_URL);
-    const prefix = base.pathname.replace(/\/$/, '') + '/';
-    if (profile.origin !== base.origin || !profile.pathname.startsWith(prefix)) return '';
+    const prefix = SITE_URL.pathname;
+    if (profile.origin !== new URL(viewerUrl).origin || !profile.pathname.startsWith(prefix)) return '';
     const relative = profile.pathname.slice(prefix.length).replace(/\/$/, '');
     const username = decodeURIComponent(relative.replace(/^user\//, '')).replace(/^@/, '');
     if (/^[\w.-]+$/.test(username) && !COMMON_SEGMENTS.has(username.toLowerCase())) return username;
@@ -420,8 +422,9 @@ function parseViewerPage(html, viewerUrl) {
   // Chevereto's viewer owner card links to the uploader's profile. Generic
   // navigation links can point to pages such as /api-v1 or to other users.
   const ownerLinks = $('.header-content-breadcrum a.user-link, .image-uploader a[href], a.user-link[rel~="author"]');
+  const avatarLinks = $('.header-content-breadcrum a.user-image[href]');
   const authorLinks = $('a[rel~="author"], [itemprop="author"] a[href]');
-  const username = [...ownerLinks, ...authorLinks]
+  const username = [...ownerLinks, ...avatarLinks, ...authorLinks]
     .map(link => profileUsername($(link).attr('href'), viewerUrl)).find(Boolean);
 
   return {
@@ -438,27 +441,14 @@ function parseViewerPage(html, viewerUrl) {
 }
 
 /**
- * Follow the /?random 302 redirect and return the viewer URL.
- * We capture the Location header directly rather than following the redirect,
- * so we always know the exact destination URL for later parsing.
- */
-async function fetchRandomImageUrl() {
-  const { response: res, url } = await trustedGet(`${BASE_URL}/?random`, {
-    ...PAGE_OPTIONS,
-    timeout:        10_000,
-    validateStatus: s => s >= 200 && s < 400,
-  }, { followRedirects: false });
-  const location = res.headers?.location;
-  if (!location) throw new Error('/?random did not return a redirect — check Chevereto config');
-  return new URL(location, url).href;
-}
-
-/**
  * Pick one random image by following /?random and parsing the viewer page.
  */
 async function fetchOneRandomImage() {
-  const viewerUrl = await fetchRandomImageUrl();
-  const { response, url } = await trustedGet(viewerUrl, PAGE_OPTIONS);
+  const { response, url } = await trustedGet(`${BASE_URL}/?random`, PAGE_OPTIONS);
+  const finalUrl = new URL(url);
+  if (finalUrl.pathname === SITE_URL.pathname && finalUrl.searchParams.has('random')) {
+    throw new Error('/?random did not redirect to a viewer page — check Chevereto config');
+  }
   return parseViewerPage(response.data, url);
 }
 
@@ -493,6 +483,7 @@ async function fetchRandomImages(n, excludeIds = [], excludedUsernames = new Set
       }
     } catch (err) {
       logger.warn(`fetchRandomImages attempt ${attempts}: ${err.message}`);
+      if (err.response?.status === 429) break;
     }
   }
 
