@@ -1,0 +1,8 @@
+services:
+  photobot-worker:
+    build: !reset null
+    image: "${PHOTOBOT_IMAGE:-ghcr.io/soloflighter1010/bluesky-bot:latest}"
+
+  photobot-dashboard:
+    build: !reset null
+    image: "${PHOTOBOT_IMAGE:-ghcr.io/soloflighter1010/bluesky-bot:latest}"
