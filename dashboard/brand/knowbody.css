@@ -1,0 +1,25 @@
+@font-face {
+  font-family: 'Barlow Condensed';
+  src: url('./fonts/barlow-condensed-700.woff2') format('woff2');
+  font-style: normal;
+  font-weight: 700;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'DM Sans';
+  src: url('./fonts/dm-sans.woff2') format('woff2');
+  font-style: normal;
+  font-weight: 400 700;
+  font-display: swap;
+}
+
+:root {
+  --brand-paper: #f2eee5;
+  --brand-ink: #211f1c;
+  --brand-red: #a33423;
+  --brand-orange: #fb996e;
+  --brand-display: 'Barlow Condensed', 'Arial Narrow', sans-serif;
+  --sans: 'DM Sans', system-ui, sans-serif;
+  --mono: ui-monospace, monospace;
+}

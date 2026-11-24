@@ -4,15 +4,17 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Worlds · Knowbody Online</title>
+  <link rel="preload" href="/brand/fonts/barlow-condensed-700.woff2" as="font" type="font/woff2" crossorigin>
+  <link rel="stylesheet" href="/brand/knowbody.css">
   <link rel="stylesheet" href="/worlds.css">
   <script src="/worlds.js" defer></script>
+  <script src="/worlds-slideshow.js" defer></script>
 </head>
 <body>
   <header class="site-header">
     <div class="shell site-header-inner">
       <a class="site-brand" href="https://knowbody.online">
-        <span class="site-mark" aria-hidden="true">K</span>
-        <span>Knowbody Online</span>
+        <img src="/brand/knowbody-wordmark.webp" alt="Knowbody Online" width="600" height="144">
       </a>
       <nav aria-label="Site">
         <a href="/worlds" aria-current="page">Worlds</a>
@@ -22,17 +24,33 @@
   </header>
 
   <main class="shell">
-    <div class="worlds-intro">
-      <div>
-        <h1>Worlds</h1>
-        <p>Explore the VRChat worlds photographed by the Knowbody Online community.</p>
+    <section class="worlds-intro" aria-labelledby="worlds-title">
+      <div class="intro-copy">
+        <p class="intro-label">VRChat photo archive</p>
+        <h1 id="worlds-title">Worlds</h1>
+        <p class="intro-description">The places we’ve photographed together.</p>
+        <dl class="worlds-stats">
+          <div><dt>Worlds</dt><dd id="stat-worlds">—</dd></div>
+          <div><dt>Photos</dt><dd id="stat-photos">—</dd></div>
+          <div><dt>Photographers</dt><dd id="stat-photographers">—</dd></div>
+        </dl>
       </div>
-      <dl class="worlds-stats">
-        <div><dt>Worlds</dt><dd id="stat-worlds">—</dd></div>
-        <div><dt>Photos</dt><dd id="stat-photos">—</dd></div>
-        <div><dt>Photographers</dt><dd id="stat-photographers">—</dd></div>
-      </dl>
-    </div>
+      <figure class="archive-photo" id="archive-slideshow">
+        <div class="archive-photo-frame">
+          <img src="/brand/gallery-cover.webp" alt="A VRChat avatar salutes against a star-filled sky" width="1440" height="810" fetchpriority="high">
+        </div>
+        <figcaption>
+          <div class="archive-photo-controls" role="group" aria-label="Cover slideshow" hidden>
+            <button type="button" id="cover-playback">Pause</button>
+            <button type="button" id="cover-previous" aria-label="Previous cover photo">←</button>
+            <span id="cover-count" aria-hidden="true"></span>
+            <button type="button" id="cover-next" aria-label="Next cover photo">→</button>
+          </div>
+          <a href="https://knowbody.online">Knowbody Online gallery <span class="external-icon" aria-hidden="true"></span></a>
+          <span class="sr-only" id="cover-status" role="status"></span>
+        </figcaption>
+      </figure>
+    </section>
 
     <div id="load-state" class="panel empty-state" role="status" aria-live="polite">
       <h2 id="load-heading">Loading worlds</h2>
