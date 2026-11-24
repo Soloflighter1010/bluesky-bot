@@ -67,7 +67,7 @@ Open `.env` in any text editor and fill in your values.
 | `DASHBOARD_PORT` | `3000` | Port the dashboard is served on |
 | `TRUST_PROXY` | _(unset)_ | Set to `true` when running behind a reverse proxy (nginx, Caddy) — required for secure cookies over HTTPS |
 | `PUBLIC_BASE_URL` | _(unset)_ | Your externally-reachable dashboard URL, e.g. `https://photobot.yourdomain.com`. Used with a shared `SESSION_SECRET` to enable high-resolution Twitter/Instagram crossposts — see [Image Quality](#image-quality-for-crossposts) below. Safe to leave unset; crossposting just falls back to the standard thumbnail until it's set. |
-| `VRCHAT_API_CONTACT` | _(unset)_ | An email or URL identifying you to VRChat's API, used to fetch each world's tags for the `/worlds` page (e.g. `you@example.com` or `https://yoursite.com`). VRChat requires clients to identify themselves properly — see [World Tags](#world-tags--grouping) below. Safe to leave unset; tag fetching still works but logs a one-time warning, and VRChat may moderate improperly-identified requests. |
+| `VRCHAT_API_CONTACT` | _(unset)_ | An email or URL identifying you to VRChat's API, used to fetch each world's tags for the `/worlds` page (e.g. `you@example.com` or `https://yoursite.com`). VRChat requires clients to identify themselves properly — see [World Tags](#world-tags) below. Safe to leave unset; tag fetching still works but logs a one-time warning, and VRChat may moderate improperly-identified requests. |
 
 > **Tip:** Avoid `#` characters in secret values — `#` starts a comment in `.env` files and will
 > silently truncate the value. Use only letters, numbers, and hyphens.
@@ -523,12 +523,10 @@ it separately if it doesn't (see Threading above).
 
 ---
 
-## World Stats — the public world map
+## World Stats — the public Worlds explorer
 
-A bubble map of every VRChat world the team's photographed in, open to anyone
-at `/worlds` — **no login required**. Rebuilding it or triggering a resync is
-an admin action and stays behind your dashboard login like everything else;
-only *viewing* the map is public.
+The map and searchable list of recorded VRChat worlds are public at `/worlds`.
+Rebuilding history requires dashboard access.
 
 **Not exhaustive.** A world only shows up here when a photo carries VRCX
 metadata — see [VRChat / VRCX Metadata](#vrchat--vrcx-metadata) above for
@@ -564,20 +562,19 @@ logs.
 
 ### Filtering
 
-The public page includes a photographer filter — selecting one or more people
-resizes every bubble to reflect just their contribution to that world (and
-fades a world out if the current selection has zero photos there), so it
-doubles as a way to compare who's shot where, not just a show/hide toggle.
+Search by world name, tag, or photographer. Filters narrow both views. Selecting
+one or more photographers displays their combined photo count for each matching
+world. With no photographer filter, counts include unattributed photos.
 
-### World tags & grouping
+The map shows up to 36 matching worlds by photo count, or 18 on small screens.
+The list includes all results and can be sorted by photo count or name.
+Select a world to see its tags, photo credits, and VRChat link.
 
-VRChat lets creators tag their own worlds (visible on the world's official
-VRChat page) — PhotoBot pulls the **first two** of those tags for each world
-it tracks and uses them to visually group similar maps: same-tagged bubbles
-are colored alike and drift toward each other on the map, and there's a tag
-filter alongside the photographer one. A world with no author tags is tracked
-exactly as before — untagged bubbles are never affected by the tag filter or
-the grouping, they just don't participate in it.
+### World tags
+
+Creators' tags provide a color cue on the map and a filter in both views.
+Selecting tags shows worlds that match at least one selected tag. Untagged
+worlds appear when no tag filter is selected.
 
 A few things worth knowing about where this data comes from:
 

@@ -1,437 +1,150 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-<meta charset="UTF-8" />
-<meta name="viewport" content="width=device-width, initial-scale=1.0" />
-<title>Worlds — Knowbody Online</title>
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600&family=DM+Mono:wght@400;500&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="dashboard.css">
-<style>
-  /* ── Worlds page overrides ──────────────────────────────── */
-  body { overflow-x: hidden; }
-
-  /* Header */
-  .worlds-header {
-    display: flex; align-items: center; justify-content: space-between;
-    padding: 0 32px; height: 56px;
-    background: var(--surface); border-bottom: 1px solid var(--border);
-    position: sticky; top: 0; z-index: 50;
-    backdrop-filter: blur(10px);
-  }
-  .worlds-brand { display: flex; align-items: center; gap: 10px; }
-  .worlds-mark {
-    width: 28px; height: 28px; background: var(--accent); border-radius: 7px;
-    display: flex; align-items: center; justify-content: center;
-    font-family: var(--mono); font-size: 13px; font-weight: 600; color: var(--bg);
-  }
-  .worlds-title { font-size: 15px; font-weight: 600; letter-spacing: -.01em; }
-  .worlds-sub   { font-family: var(--mono); font-size: 10px; color: var(--muted); letter-spacing: .08em; text-transform: uppercase; margin-left: 4px; }
-  #updated { font-family: var(--mono); font-size: 10px; color: var(--muted); }
-
-  /* Main layout */
-  .worlds-main { max-width: 1120px; margin: 0 auto; padding: 28px 32px; display: flex; flex-direction: column; gap: 20px; }
-
-  /* Disclaimer */
-  .worlds-disclaimer {
-    background: var(--raised); border: 1px solid var(--border);
-    border-left: 2px solid var(--accent); border-radius: var(--r);
-    padding: 12px 16px; font-size: 12px; color: var(--text-2); line-height: 1.6;
-    font-family: var(--mono);
-  }
-
-  /* Stats strip */
-  .worlds-stats { display: flex; gap: 20px; flex-wrap: wrap; }
-  .worlds-stat { }
-  .worlds-stat-value { font-size: 28px; font-weight: 600; color: var(--text); letter-spacing: -.04em; line-height: 1; }
-  .worlds-stat-label { font-family: var(--mono); font-size: 9px; letter-spacing: .12em; text-transform: uppercase; color: var(--muted); margin-top: 4px; }
-
-  /* Toolbar */
-  .worlds-toolbar {
-    display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
-  }
-  .view-btn {
-    font-family: var(--mono); font-size: 11px; padding: 6px 14px;
-    border-radius: var(--r); border: 1px solid var(--border);
-    color: var(--muted); background: var(--raised); cursor: pointer;
-    transition: all .15s;
-  }
-  .view-btn.active { border-color: var(--accent); color: var(--accent); background: var(--accent-lo); }
-  .sort-select {
-    font-family: var(--mono); font-size: 11px; padding: 6px 10px;
-    border-radius: var(--r); border: 1px solid var(--border);
-    color: var(--muted); background: var(--raised); cursor: pointer; margin-left: auto;
-  }
-
-  /* Filter chips */
-  .filter-row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
-  .filter-label { font-family: var(--mono); font-size: 9px; letter-spacing: .12em; text-transform: uppercase; color: var(--muted); margin-right: 2px; }
-
-  /* Stage */
-  .stage-card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--r-lg); overflow: hidden; }
-  #stage { position: relative; width: 100%; height: 60vh; min-height: 400px; }
-
-  /* Bubbles */
-  .bubble {
-    position: absolute; border-radius: 50%;
-    display: flex; align-items: center; justify-content: center; text-align: center;
-    cursor: pointer; transition: opacity .3s, border-color .2s;
-    border: 1px solid rgba(129,140,248,.4);
-    background: radial-gradient(circle at 32% 28%, rgba(129,140,248,.45), rgba(34,211,153,.2));
-  }
-  .bubble:hover { border-color: var(--accent); }
-  .bubble-label {
-    font-family: var(--sans); font-weight: 600; font-size: 11px;
-    color: var(--text); padding: 0 6px; pointer-events: none;
-    text-shadow: 0 1px 3px rgba(0,0,0,.6);
-  }
-
-  /* Popup card */
-  .popup-card {
-    position: absolute; display: none;
-    background: var(--raised); border: 1px solid var(--accent);
-    border-radius: var(--r); padding: 14px 16px; max-width: 220px; z-index: 50;
-    box-shadow: 0 12px 32px rgba(0,0,0,.6);
-  }
-  .popup-name  { color: var(--accent); font-weight: 600; margin-bottom: 6px; font-size: 13px; }
-  .popup-tags  { display: flex; flex-wrap: wrap; gap: 4px; margin-bottom: 8px; }
-  .popup-count { color: var(--muted); font-size: 11px; margin-bottom: 10px; font-family: var(--mono); }
-  .popup-link  {
-    display: inline-block; background: var(--accent); color: var(--bg);
-    font-family: var(--mono); font-size: 11px; font-weight: 600;
-    text-decoration: none; padding: 6px 12px; border-radius: 5px;
-  }
-  .popup-link:hover { background: #a5b4fc; }
-
-  /* List view */
-  .worlds-list { display: none; flex-direction: column; gap: 6px; }
-  .world-row {
-    display: flex; align-items: center; gap: 14px; flex-wrap: wrap;
-    background: var(--surface); border: 1px solid var(--border); border-radius: var(--r);
-    padding: 12px 16px; transition: border-color .15s;
-  }
-  .world-row:hover { border-color: var(--border-hi); }
-  .world-row-main { flex: 1; min-width: 160px; }
-  .world-row-name { font-weight: 500; font-size: 13px; color: var(--text); margin-bottom: 4px; }
-  .world-row-tags { display: flex; flex-wrap: wrap; gap: 4px; }
-  .world-row-count { font-size: 20px; font-weight: 600; color: var(--text); letter-spacing: -.03em; min-width: 36px; text-align: right; }
-  .world-row-unit  { font-family: var(--mono); font-size: 9px; color: var(--muted); text-transform: uppercase; letter-spacing: .08em; }
-  .world-row-link  {
-    font-family: var(--mono); font-size: 11px; color: var(--bg); background: var(--accent);
-    text-decoration: none; padding: 6px 12px; border-radius: 5px; font-weight: 600; white-space: nowrap;
-  }
-  .world-row-link:hover { background: #a5b4fc; }
-
-  /* Tag pills */
-  .tag-pill { font-family: var(--mono); font-size: 9px; padding: 2px 7px; border-radius: 4px; border: 1px solid; }
-
-  .worlds-empty { font-family: var(--mono); font-size: 12px; color: var(--muted); text-align: center; padding: 60px 20px; }
-  .worlds-footer { text-align: center; padding: 20px; font-family: var(--mono); font-size: 10px; color: var(--muted); letter-spacing: .04em; }
-</style>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Worlds · Knowbody Online</title>
+  <link rel="stylesheet" href="/worlds.css">
+  <script src="/worlds.js" defer></script>
 </head>
 <body>
+  <header class="site-header">
+    <div class="shell site-header-inner">
+      <a class="site-brand" href="https://knowbody.online">
+        <span class="site-mark" aria-hidden="true">K</span>
+        <span>Knowbody Online</span>
+      </a>
+      <nav aria-label="Site">
+        <a href="/worlds" aria-current="page">Worlds</a>
+        <a href="https://knowbody.online">Gallery <span class="external-icon" aria-hidden="true"></span></a>
+      </nav>
+    </div>
+  </header>
 
-<header class="worlds-header">
-  <div class="worlds-brand">
-    <div class="worlds-mark">P</div>
-    <span class="worlds-title">Worlds</span>
-    <span class="worlds-sub">Every map the team's shot in</span>
-  </div>
-  <span id="updated"></span>
-</header>
+  <main class="shell">
+    <div class="worlds-intro">
+      <div>
+        <h1>Worlds</h1>
+        <p>Explore the VRChat worlds photographed by the Knowbody Online community.</p>
+      </div>
+      <dl class="worlds-stats">
+        <div><dt>Worlds</dt><dd id="stat-worlds">—</dd></div>
+        <div><dt>Photos</dt><dd id="stat-photos">—</dd></div>
+        <div><dt>Photographers</dt><dd id="stat-photographers">—</dd></div>
+      </dl>
+    </div>
 
-<div class="worlds-main">
+    <div id="load-state" class="panel empty-state" role="status" aria-live="polite">
+      <h2 id="load-heading">Loading worlds</h2>
+      <p id="load-message" hidden></p>
+      <button class="button button-secondary" id="retry-load" type="button" hidden>Try again</button>
+    </div>
 
-  <div class="worlds-disclaimer">
-    ⚠️ This list isn't exhaustive — worlds only appear when a photo carries VRCX metadata,
-    and not every photographer has VRCX installed. Some worlds may be missing or undercounted.
-  </div>
+    <div id="explorer" hidden>
+      <div class="toolbar">
+        <label class="world-search">
+          <span class="search-icon" aria-hidden="true"></span>
+          <span class="sr-only">Search worlds</span>
+          <input id="world-search" type="search" placeholder="Search worlds, tags, or photographers…" autocomplete="off">
+        </label>
 
-  <div class="worlds-stats" id="stats-row"></div>
-
-  <div class="worlds-toolbar" id="view-toolbar" style="display:none">
-    <button class="view-btn active" id="view-btn-bubbles" onclick="setView('bubbles')">🫧 Bubbles</button>
-    <button class="view-btn" id="view-btn-list" onclick="setView('list')">📋 List</button>
-    <select class="sort-select" id="sort-select" onchange="setSort(this.value)">
-      <option value="photos">Sort: Most Photos</option>
-      <option value="name">Sort: A–Z</option>
-    </select>
-  </div>
-
-  <div class="filter-row" id="filters" style="display:none">
-    <span class="filter-label">Photographer</span>
-  </div>
-  <div class="filter-row" id="tag-filters" style="display:none">
-    <span class="filter-label">Tag</span>
-  </div>
-
-  <div class="stage-card" id="stage-card">
-    <div id="stage"><div class="worlds-empty">Loading…</div></div>
-  </div>
-
-  <div class="worlds-list" id="list-wrap"></div>
-
-</div>
-
-<footer class="worlds-footer">PhotoBot · bubble size reflects photo count for the selected photographer(s) · colour reflects tag · same-tagged worlds drift together</footer>
-
-<script>
-  let worlds = [], photographers = [], allTags = [];
-  const active = new Set(), activeTags = new Set();
-  let nodes = [], animRunning = false, currentView = 'bubbles', sortMode = 'photos';
-
-  const stage     = document.getElementById('stage');
-  const stageCard = document.getElementById('stage-card');
-  const listWrap  = document.getElementById('list-wrap');
-  const toolbar   = document.getElementById('view-toolbar');
-  const filters   = document.getElementById('filters');
-  const tagFilters= document.getElementById('tag-filters');
-  const statsRow  = document.getElementById('stats-row');
-
-  async function load() {
-    try {
-      const res  = await fetch('/api/world-stats');
-      const data = await res.json();
-      worlds       = data.worlds       || [];
-      photographers= data.photographers|| [];
-      allTags      = data.tags         || [];
-      photographers.forEach(p => active.add(p));
-      allTags.forEach(t => activeTags.add(t));
-
-      document.getElementById('updated').textContent = data.updatedAt
-        ? 'updated ' + new Date(data.updatedAt).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'})
-        : '';
-
-      renderStats(); renderFilters(); renderTagFilters();
-
-      if (!worlds.length) {
-        stage.innerHTML = '<div class="worlds-empty">No world data yet — check back once the team\'s posted a few batches.</div>';
-        return;
-      }
-
-      toolbar.style.display = 'flex';
-      buildStage(); renderList();
-    } catch {
-      stage.innerHTML = '<div class="worlds-empty">Couldn\'t load world data right now.</div>';
-    }
-  }
-
-  function setView(view) {
-    currentView = view;
-    document.getElementById('view-btn-bubbles').classList.toggle('active', view === 'bubbles');
-    document.getElementById('view-btn-list').classList.toggle('active', view === 'list');
-    stageCard.style.display  = view === 'bubbles' ? 'block' : 'none';
-    listWrap.style.display   = view === 'list'    ? 'flex'  : 'none';
-  }
-
-  function setSort(mode) { sortMode = mode; renderList(); }
-
-  function renderStats() {
-    const total = worlds.reduce((s, w) => s + w.totalPhotos, 0);
-    statsRow.innerHTML = [
-      ['Worlds Visited', worlds.length],
-      ['Photos Tracked', total],
-      ['Photographers',  photographers.length],
-    ].map(([label, val]) => `
-      <div class="worlds-stat">
-        <div class="worlds-stat-value">${val}</div>
-        <div class="worlds-stat-label">${label}</div>
-      </div>`).join('');
-  }
-
-  function renderFilters() {
-    if (photographers.length <= 1) { filters.style.display = 'none'; return; }
-    filters.style.display = 'flex';
-    filters.innerHTML = '<span class="filter-label">Photographer</span>';
-    const all = document.createElement('span');
-    all.className = 'chip chip-all'; all.textContent = 'All';
-    all.onclick = () => { photographers.forEach(p => active.add(p)); refresh(); renderList(); };
-    filters.appendChild(all);
-    photographers.forEach(p => {
-      const chip = document.createElement('span');
-      chip.className = 'chip'; chip.textContent = '@' + p;
-      chip.onclick = () => {
-        if (active.has(p)) active.delete(p); else active.add(p);
-        chip.classList.toggle('off', !active.has(p));
-        refresh(); renderList();
-      };
-      filters.appendChild(chip);
-    });
-  }
-
-  function renderTagFilters() {
-    if (!allTags.length) { tagFilters.style.display = 'none'; return; }
-    tagFilters.style.display = 'flex';
-    tagFilters.innerHTML = '<span class="filter-label">Tag</span>';
-    const all = document.createElement('span');
-    all.className = 'chip chip-all'; all.textContent = 'All';
-    all.onclick = () => { allTags.forEach(t => activeTags.add(t)); applyTagFilter(); renderList(); };
-    tagFilters.appendChild(all);
-    allTags.forEach(t => {
-      const chip = document.createElement('span');
-      chip.className = 'chip';
-      const dot = document.createElement('span');
-      dot.className = 'chip-tag-dot'; dot.style.background = tagColor(t);
-      chip.appendChild(dot); chip.appendChild(document.createTextNode(t));
-      chip.onclick = () => {
-        if (activeTags.has(t)) activeTags.delete(t); else activeTags.add(t);
-        chip.classList.toggle('off', !activeTags.has(t));
-        applyTagFilter(); renderList();
-      };
-      tagFilters.appendChild(chip);
-    });
-  }
-
-  function tagColor(tag) {
-    let hash = 0;
-    for (let i = 0; i < tag.length; i++) hash = (hash * 31 + tag.charCodeAt(i)) >>> 0;
-    return `hsl(${hash % 360}, 60%, 65%)`;
-  }
-
-  function sharesActiveTag(n) {
-    if (!n.tags?.length) return true;
-    return n.tags.some(t => activeTags.has(t));
-  }
-  function sharesTag(a, b) {
-    if (!a.tags?.length || !b.tags?.length) return false;
-    return a.tags.some(t => b.tags.includes(t));
-  }
-  function applyTagFilter() { nodes.forEach(n => { n.tagDimmed = !sharesActiveTag(n); }); }
-
-  function currentCount(w) {
-    let sum = 0;
-    for (const p of active) sum += (w.photographers[p] || 0);
-    return sum;
-  }
-
-  function escHtml(s) {
-    return String(s ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
-  }
-
-  function renderList() {
-    const rows = worlds
-      .map(w => ({ w, count: currentCount(w) }))
-      .filter(({ w, count }) => count > 0 && sharesActiveTag(w));
-    sortMode === 'name' ? rows.sort((a,b) => a.w.worldName.localeCompare(b.w.worldName))
-                        : rows.sort((a,b) => b.count - a.count);
-
-    if (!rows.length) { listWrap.innerHTML = '<div class="worlds-empty">No worlds match the current filters.</div>'; return; }
-
-    listWrap.innerHTML = rows.map(({ w, count }) => {
-      const tagsHtml = w.tags?.length
-        ? '<div class="world-row-tags">' + w.tags.map(t => `<span class="tag-pill" style="border-color:${tagColor(t)};color:${tagColor(t)}">${escHtml(t)}</span>`).join('') + '</div>'
-        : '';
-      return `<div class="world-row">
-        <div class="world-row-main">
-          <div class="world-row-name">${escHtml(w.worldName)}</div>
-          ${tagsHtml}
+        <div class="toolbar-filters">
+          <details class="facet" id="photographer-facet">
+            <summary>Photographers <span class="filter-count" id="photographer-count" hidden></span></summary>
+            <div class="facet-popover">
+              <div class="facet-options" id="photographer-options"></div>
+            </div>
+          </details>
+          <details class="facet" id="tag-facet">
+            <summary>Tags <span class="filter-count" id="tag-count" hidden></span></summary>
+            <div class="facet-popover">
+              <label class="tag-search">
+                <span class="sr-only">Search tags</span>
+                <input id="tag-search" type="search" placeholder="Find a tag…" autocomplete="off">
+              </label>
+              <div class="facet-options" id="tag-options"></div>
+            </div>
+          </details>
         </div>
-        <div style="text-align:right">
-          <div class="world-row-count">${count}</div>
-          <div class="world-row-unit">photo${count===1?'':'s'}</div>
+
+        <div class="view-switch" role="group" aria-label="World view">
+          <button id="map-view" type="button" aria-pressed="true"><span class="map-icon" aria-hidden="true"></span> Map</button>
+          <button id="list-view" type="button" aria-pressed="false"><span class="list-icon" aria-hidden="true"></span> List</button>
         </div>
-        <a class="world-row-link" href="${escHtml(w.worldUrl)}" target="_blank" rel="noopener">Open →</a>
-      </div>`;
-    }).join('');
-  }
+      </div>
 
-  function buildStage() {
-    stage.innerHTML = '<div class="popup-card" id="popup-card"></div>';
-    const popup = document.getElementById('popup-card');
+      <div class="active-filters" id="active-filters" hidden>
+        <div id="filter-chips" class="filter-chips"></div>
+        <button class="text-button" id="clear-filters" type="button">Clear filters</button>
+      </div>
 
-    nodes = worlds.map(w => ({
-      ...w,
-      x: Math.random() * 700 + 60, y: Math.random() * 300 + 40,
-      vx: 0, vy: 0, r: 10, targetR: 10, count: 0,
-    }));
+      <div class="explorer-grid">
+        <section class="panel results-panel" aria-labelledby="results-title">
+          <div class="panel-header">
+            <div>
+              <h2 id="results-title">World map</h2>
+              <p id="result-count" role="status" aria-live="polite"></p>
+            </div>
+            <label class="sort-control" id="sort-control" hidden>
+              <span class="sr-only">Sort worlds</span>
+              <select id="world-sort">
+                <option value="photos">Most photos</option>
+                <option value="name">World name A–Z</option>
+              </select>
+            </label>
+            <div class="map-legend" id="map-legend">
+              <span class="legend-circles" aria-hidden="true"><i></i><i></i><i></i></span>
+              Circle size shows photo count
+            </div>
+          </div>
 
-    nodes.forEach(n => {
-      const el = document.createElement('div');
-      el.className = 'bubble';
-      el.innerHTML = '<span class="bubble-label"></span>';
-      el.onclick = () => showPopup(n, popup);
-      if (n.tags?.[0]) {
-        const c = tagColor(n.tags[0]);
-        el.style.borderColor = c;
-        el.style.background  = `radial-gradient(circle at 32% 28%, ${c}55, rgba(34,211,153,.18))`;
-      }
-      stage.appendChild(el);
-      n.el = el; n.labelEl = el.querySelector('.bubble-label');
-    });
+          <div id="map-panel">
+            <div id="map-stage" class="map-stage" role="group" aria-label="Worlds by photo count"></div>
+            <div id="map-footer" class="panel-footer">
+              <span id="map-count"></span>
+              <button class="text-button" id="view-all-worlds" type="button">View all in list <span aria-hidden="true">→</span></button>
+            </div>
+          </div>
 
-    stage.addEventListener('click', e => { if (e.target === stage) popup.style.display = 'none'; });
-    applyTagFilter(); refresh();
-    if (!animRunning) { animRunning = true; requestAnimationFrame(tick); }
-  }
+          <div id="list-panel" hidden>
+            <ul id="world-list" class="world-list" aria-label="Worlds"></ul>
+            <div id="list-footer" class="panel-footer">
+              <span id="list-count"></span>
+              <button class="button button-secondary" id="show-more" type="button">Show more</button>
+            </div>
+          </div>
 
-  function refresh() {
-    const maxCount = Math.max(1, ...nodes.map(currentCount));
-    nodes.forEach(n => { n.count = currentCount(n); n.targetR = 12 + Math.sqrt(n.count / maxCount) * 58; });
-    const popup = document.getElementById('popup-card');
-    if (popup) popup.style.display = 'none';
-  }
+          <div class="empty-state" id="empty-results" hidden>
+            <h3>No matching worlds</h3>
+            <p>Try a different search or clear your filters.</p>
+            <button class="button button-secondary" id="reset-results" type="button">Clear filters</button>
+          </div>
+        </section>
 
-  function showPopup(n, popup) {
-    const tagRow = n.tags?.length
-      ? '<div class="popup-tags">' + n.tags.map(t => `<span class="tag-pill" style="border-color:${tagColor(t)};color:${tagColor(t)}">${escHtml(t)}</span>`).join('') + '</div>'
-      : '';
-    popup.innerHTML =
-      '<div class="popup-name">' + escHtml(n.worldName) + '</div>' + tagRow +
-      '<div class="popup-count">' + n.count + ' photo' + (n.count===1?'':'s') +
-        (active.size < photographers.length ? ' (filtered)' : '') + '</div>' +
-      '<a class="popup-link" href="' + escHtml(n.worldUrl) + '" target="_blank" rel="noopener">Open in VRChat →</a>';
-    const sr = stage.getBoundingClientRect(), br = n.el.getBoundingClientRect();
-    let left = br.left - sr.left + br.width / 2 - 100;
-    let top  = br.top  - sr.top  - 10;
-    left = Math.max(6, Math.min(left, sr.width - 226));
-    top  = Math.max(6, top);
-    popup.style.left = left + 'px'; popup.style.top = top + 'px'; popup.style.display = 'block';
-  }
+        <aside class="panel detail-panel" id="detail-panel" aria-label="World details">
+          <div class="detail-header" aria-live="polite">
+            <p class="detail-label"><span aria-hidden="true"></span> Selected world</p>
+            <h2 id="detail-title" tabindex="-1"></h2>
+            <p id="detail-photo-count" class="detail-photo-count"></p>
+          </div>
+          <div class="detail-body">
+            <div id="detail-tags" class="world-tags" aria-label="World tags"></div>
+            <div id="detail-credits">
+              <h3>Photographers</h3>
+              <ul id="credit-list" class="credit-list"></ul>
+            </div>
+            <a class="button visit-button" id="visit-world" target="_blank" rel="noopener noreferrer">
+              Open in VRChat <span class="external-icon" aria-hidden="true"></span>
+            </a>
+          </div>
+        </aside>
+      </div>
+    </div>
 
-  function tick() {
-    if (!nodes.length) { animRunning = false; return; }
-    const W = stage.clientWidth || 800, H = stage.clientHeight || 420;
-    nodes.forEach(n => { n.r += (n.targetR - n.r) * 0.08; });
-
-    for (let i = 0; i < nodes.length; i++) {
-      for (let j = i + 1; j < nodes.length; j++) {
-        const a = nodes[i], b = nodes[j];
-        const dx = b.x - a.x, dy = b.y - a.y;
-        const dist = Math.sqrt(dx*dx + dy*dy) || 0.01;
-        const minDist = a.r + b.r + 10;
-        if (dist < minDist) {
-          const overlap = (minDist - dist) / dist * 0.5;
-          a.vx -= dx * overlap * 0.06; a.vy -= dy * overlap * 0.06;
-          b.vx += dx * overlap * 0.06; b.vy += dy * overlap * 0.06;
-        } else if (dist < 380 && sharesTag(a, b)) {
-          const pull = 0.0007;
-          a.vx += dx * pull; a.vy += dy * pull;
-          b.vx -= dx * pull; b.vy -= dy * pull;
-        }
-      }
-    }
-
-    nodes.forEach(n => {
-      n.vx += (W / 2 - n.x) * 0.001; n.vy += (H / 2 - n.y) * 0.001;
-      n.vx *= 0.88; n.vy *= 0.88;
-      n.x += n.vx; n.y += n.vy;
-      n.x = Math.max(n.r, Math.min(W - n.r, n.x));
-      n.y = Math.max(n.r, Math.min(H - n.r, n.y));
-      n.el.style.width  = (n.r * 2) + 'px';
-      n.el.style.height = (n.r * 2) + 'px';
-      n.el.style.left   = (n.x - n.r) + 'px';
-      n.el.style.top    = (n.y - n.r) + 'px';
-      n.el.style.opacity = (n.count === 0 || n.tagDimmed) ? 0.12 : 1;
-      n.labelEl.textContent = n.r > 28 ? n.worldName : '';
-      n.labelEl.style.fontSize = Math.max(8, Math.min(13, n.r / 3.8)) + 'px';
-    });
-
-    requestAnimationFrame(tick);
-  }
-
-  window.addEventListener('resize', () => { if (nodes.length) refresh(); });
-  load();
-  setInterval(load, 5 * 60 * 1000);
-</script>
+    <footer class="worlds-footer">
+      <p>World and photo counts come from VRCX metadata. Some visits may be missing.</p>
+      <p id="updated"></p>
+    </footer>
+  </main>
 </body>
 </html>
