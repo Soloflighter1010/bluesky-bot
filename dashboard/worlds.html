@@ -8,6 +8,7 @@
   <link rel="stylesheet" href="/brand/knowbody.css">
   <link rel="stylesheet" href="/worlds.css">
   <script src="/worlds.js" defer></script>
+  <script src="/worlds-slideshow.js" defer></script>
 </head>
 <body>
   <header class="site-header">
@@ -34,9 +35,20 @@
           <div><dt>Photographers</dt><dd id="stat-photographers">—</dd></div>
         </dl>
       </div>
-      <figure class="archive-photo">
-        <img src="/brand/gallery-cover.webp" alt="A VRChat avatar salutes against a star-filled sky" width="1440" height="810" fetchpriority="high">
-        <figcaption><a href="https://knowbody.online">From the Knowbody Online gallery <span class="external-icon" aria-hidden="true"></span></a></figcaption>
+      <figure class="archive-photo" id="archive-slideshow">
+        <div class="archive-photo-frame">
+          <img src="/brand/gallery-cover.webp" alt="A VRChat avatar salutes against a star-filled sky" width="1440" height="810" fetchpriority="high">
+        </div>
+        <figcaption>
+          <div class="archive-photo-controls" role="group" aria-label="Cover slideshow" hidden>
+            <button type="button" id="cover-playback">Pause</button>
+            <button type="button" id="cover-previous" aria-label="Previous cover photo">←</button>
+            <span id="cover-count" aria-hidden="true"></span>
+            <button type="button" id="cover-next" aria-label="Next cover photo">→</button>
+          </div>
+          <a href="https://knowbody.online">Knowbody Online gallery <span class="external-icon" aria-hidden="true"></span></a>
+          <span class="sr-only" id="cover-status" role="status"></span>
+        </figcaption>
       </figure>
     </section>
 

@@ -104,17 +104,23 @@ a { color: inherit; }
   font-variant-numeric: tabular-nums;
 }
 .archive-photo {
+  --cover-height: clamp(220px, 24vw, 288px);
   display: grid;
   grid-template-rows: minmax(0, 1fr) auto;
   min-width: 0;
   background: var(--map);
   color: var(--map-ink);
 }
-.archive-photo img { display: block; width: 100%; height: 100%; min-height: 220px; max-height: 288px; object-fit: cover; object-position: 50% 24%; }
-.archive-photo figcaption { display: flex; justify-content: flex-end; padding: 9px 12px; }
-.archive-photo a { text-decoration: none; }
+.archive-photo img { display: block; width: 100%; height: var(--cover-height); object-fit: cover; object-position: 50% var(--cover-crop, 24%); }
+.archive-photo figcaption { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; padding: 5px 10px; }
+.archive-photo-controls { display: flex; align-items: center; gap: 4px; }
+.archive-photo-controls button { min-width: 32px; min-height: 32px; padding: 0 5px; border: 1px solid #f5ede045; border-radius: 2px; background: transparent; }
+.archive-photo-controls button:hover { color: var(--map); background: var(--map-ink); }
+#cover-playback { min-width: 54px; }
+#cover-count { min-width: 44px; text-align: center; font-variant-numeric: tabular-nums; }
+.archive-photo a { margin-inline-start: auto; padding-block: 4px; text-decoration: none; }
 .archive-photo a:hover { text-decoration: underline; }
-.archive-photo a:focus-visible { outline-color: var(--brand-orange); }
+.archive-photo :focus-visible { outline-color: var(--brand-orange); outline-offset: 2px; }
 
 .toolbar {
   display: grid;
@@ -334,7 +340,7 @@ input::placeholder { color: var(--muted); opacity: 1; }
   .worlds-intro { grid-template-columns: minmax(0, 1fr); gap: 18px; padding-block: 20px; }
   .worlds-intro h1 { font-size: min(25cqw, 115px); }
   .worlds-stats { margin-top: 15px; }
-  .archive-photo img { min-height: 0; max-height: none; height: clamp(144px, 36vw, 240px); }
+  .archive-photo { --cover-height: clamp(144px, 36vw, 240px); }
   .explorer-grid { grid-template-columns: 1fr; }
   .detail-panel { position: static; }
   .detail-body { gap: 13px; }

@@ -375,12 +375,14 @@ test('Worlds and the dashboard sign-in can load their shared branding before aut
     assert.match(html, /href="\/brand\/knowbody\.css"/);
     assert.match(html, /src="\/brand\/knowbody-wordmark\.webp"/);
     assert.match(html, /src="\/brand\/gallery-cover\.webp"/);
+    if (path === '/worlds') assert.match(html, /src="\/worlds-slideshow\.js"/);
   }
 
   for (const [path, type] of [
     ['knowbody.css', 'text/css'],
     ['knowbody-wordmark.webp', 'image/webp'],
     ['gallery-cover.webp', 'image/webp'],
+    ['covers/pool-float.webp', 'image/webp'],
     ['fonts/barlow-condensed-700.woff2', 'font/woff2'],
     ['fonts/dm-sans.woff2', 'font/woff2'],
   ]) {
