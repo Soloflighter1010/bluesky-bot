@@ -363,6 +363,33 @@ test('dashboard rejects old placeholder credentials and image rendering falls ba
   assert.equal(processResult.status, 0, processResult.stderr);
 });
 
+test('Worlds and the dashboard sign-in can load their shared branding before authentication', async t => {
+  const server = await dashboard.startDashboard();
+  t.after(() => new Promise(resolve => server.close(resolve)));
+  const app = `http://127.0.0.1:${server.address().port}`;
+
+  for (const path of ['/', '/worlds']) {
+    const page = await fetch(app + path);
+    assert.equal(page.status, 200, path);
+    const html = await page.text();
+    assert.match(html, /href="\/brand\/knowbody\.css"/);
+    assert.match(html, /src="\/brand\/knowbody-wordmark\.webp"/);
+    assert.match(html, /src="\/brand\/gallery-cover\.webp"/);
+  }
+
+  for (const [path, type] of [
+    ['knowbody.css', 'text/css'],
+    ['knowbody-wordmark.webp', 'image/webp'],
+    ['gallery-cover.webp', 'image/webp'],
+    ['fonts/barlow-condensed-700.woff2', 'font/woff2'],
+    ['fonts/dm-sans.woff2', 'font/woff2'],
+  ]) {
+    const asset = await fetch(`${app}/brand/${path}`, { method: 'HEAD' });
+    assert.equal(asset.status, 200, path);
+    assert.equal(asset.headers.get('content-type').split(';')[0], type, path);
+  }
+});
+
 test('dashboard password verification is rate-limited', async t => {
   const server = await dashboard.startDashboard();
   t.after(() => new Promise(resolve => server.close(resolve)));

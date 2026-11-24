@@ -41,7 +41,7 @@ function formatPhotos(count) {
 function tagHue(tag = '') {
   let hash = 0;
   for (const character of tag) hash = (hash * 31 + character.codePointAt(0)) >>> 0;
-  return [259, 195, 167, 305, 226, 32][hash % 6];
+  return [197, 166, 45, 329, 259, 16][hash % 6];
 }
 
 function worldHue(world) {
@@ -247,7 +247,6 @@ function renderDetails() {
   detailPanel.hidden = !selected;
   if (!selected) return;
   const { world, count } = selected;
-  detailPanel.style.setProperty('--hue', worldHue(world));
   detailTitle.textContent = world.worldName;
   byId('detail-photo-count').textContent = formatPhotos(count);
   byId('detail-tags').replaceChildren(...world.tags.map(tagElement));
